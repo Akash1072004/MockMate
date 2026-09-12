@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { User, Save, CheckCircle2, AlertCircle, Star } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
 import { getInterviewerRatingSummary } from '../services/reviewService';
 
 export default function ProfilePage() {

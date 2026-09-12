@@ -17,8 +17,13 @@ import {
   Calendar,
   Award,
   Globe,
-  Trophy
+  Trophy,
+  BookOpen,
+  Plus
 } from 'lucide-react';
+import QuestionBankModal from '../components/questions/QuestionBankModal';
+import CreateQuestionModal from '../components/questions/CreateQuestionModal';
+import { addQuestionToInterview } from '../services/questionService';
 
 export default function InterviewerDashboard() {
   const { user, profile } = useAuth();
@@ -41,6 +46,9 @@ export default function InterviewerDashboard() {
   const [activeTab, setActiveTab] = useState('incoming'); // 'incoming' | 'active' | 'history' | 'reviews'
   const [actionLoading, setActionLoading] = useState(null); // requestId
   const [actionError, setActionError] = useState('');
+  const [actionSuccess, setActionSuccess] = useState('');
+  const [showQuestionBankModal, setShowQuestionBankModal] = useState(false);
+  const [selectedInterviewForQuestions, setSelectedInterviewForQuestions] = useState(null);
 
   const displayName = profile?.full_name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'Interviewer';
 
@@ -48,6 +56,17 @@ export default function InterviewerDashboard() {
   const acceptedSessions = requests.filter((r) => r.status === 'accepted');
   const activeInterviews = interviews.filter((i) => i.status === 'waiting' || i.status === 'active');
   const completedInterviews = interviews.filter((i) => i.status === 'completed');
+
+  const handleSelectQuestionForInterview = async (q) => {
+    if (!selectedInterviewForQuestions) return;
+    try {
+      await addQuestionToInterview(selectedInterviewForQuestions, q);
+      setActionSuccess(`Problem "${q.title}" added to interview session.`);
+      setTimeout(() => setActionSuccess(''), 4000);
+    } catch (err) {
+      setActionError(err.message || 'Failed to add question to interview.');
+    }
+  };
 
   const handleAccept = async (req) => {
     setActionLoading(req.id);
@@ -126,6 +145,18 @@ export default function InterviewerDashboard() {
               <span>{refreshing ? 'Syncing...' : 'Refresh'}</span>
             </button>
 
+            <button
+              onClick={() => {
+                setSelectedInterviewForQuestions(null);
+                setShowQuestionBankModal(true);
+              }}
+              className="btn btn-secondary btn-sm"
+              style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+            >
+              <BookOpen size={15} color="#818cf8" />
+              <span>Question Bank</span>
+            </button>
+
             <Link to="/leaderboard" className="btn btn-secondary btn-sm" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
               <Trophy size={15} color="#f59e0b" />
               <span>Leaderboard</span>
@@ -137,6 +168,24 @@ export default function InterviewerDashboard() {
           </div>
         </div>
       </div>
+
+      {actionSuccess && (
+        <div style={{
+          marginBottom: '1.5rem',
+          background: 'rgba(16, 185, 129, 0.1)',
+          border: '1px solid #10b981',
+          color: '#34d399',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '0.5rem',
+          padding: '0.75rem 1rem',
+          borderRadius: 'var(--radius-md)',
+          fontSize: '0.9rem'
+        }}>
+          <CheckCircle2 size={18} />
+          <span>{actionSuccess}</span>
+        </div>
+      )}
 
       {actionError && (
         <div className="alert alert-danger" style={{ marginBottom: '1.5rem' }}>
@@ -405,17 +454,31 @@ export default function InterviewerDashboard() {
                       </div>
                     </div>
 
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
                       {req.join_code && (
                         <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', background: 'rgba(255,255,255,0.05)', padding: '0.35rem 0.65rem', borderRadius: 'var(--radius-sm)' }}>
                           Code: {req.join_code}
                         </span>
                       )}
                       {req.interview_id && (
-                        <Link to={`/interview/${req.interview_id}`} className="btn btn-primary btn-sm">
-                          <Play size={15} />
-                          <span>Enter Room</span>
-                        </Link>
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedInterviewForQuestions(req.interview_id);
+                              setShowQuestionBankModal(true);
+                            }}
+                            className="btn btn-outline btn-sm"
+                            style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                          >
+                            <Plus size={14} />
+                            <span>Add Question</span>
+                          </button>
+                          <Link to={`/interview/${req.interview_id}`} className="btn btn-primary btn-sm">
+                            <Play size={15} />
+                            <span>Enter Room</span>
+                          </Link>
+                        </>
                       )}
                     </div>
                   </div>
@@ -535,6 +598,19 @@ export default function InterviewerDashboard() {
           </div>
         )}
       </div>
+
+      {showQuestionBankModal && (
+        <QuestionBankModal
+          isOpen={showQuestionBankModal}
+          onClose={() => {
+            setShowQuestionBankModal(false);
+            setSelectedInterviewForQuestions(null);
+          }}
+          onSelectQuestion={selectedInterviewForQuestions ? handleSelectQuestionForInterview : undefined}
+          selectionMode={Boolean(selectedInterviewForQuestions)}
+        />
+      )}
     </div>
   );
 }
+

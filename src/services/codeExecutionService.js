@@ -12,6 +12,7 @@ export async function runCode({
   testCases = [],
   customInput = null,
   interviewId = null,
+  questionId = null,
   timeoutMs = 5000,
 }) {
   try {
@@ -26,6 +27,7 @@ export async function runCode({
         testCases,
         customInput,
         interviewId,
+        questionId,
         timeoutMs,
       }),
     });

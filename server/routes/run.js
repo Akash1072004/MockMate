@@ -15,7 +15,7 @@ const MAX_CODE_LENGTH = 100000; // 100 KB max source code
  */
 router.post('/', async (req, res, next) => {
   try {
-    const { language, code, testCases, customInput, interviewId, timeoutMs } = req.body || {};
+    const { language, code, testCases, customInput, interviewId, questionId, timeoutMs } = req.body || {};
 
     if (!code || typeof code !== 'string') {
       return res.status(400).json({
@@ -48,6 +48,29 @@ router.post('/', async (req, res, next) => {
       }
     }
 
+    // Fetch hidden test cases from Supabase if questionId provided
+    let allTestCases = Array.isArray(testCases) ? testCases.map(tc => ({ ...tc, isHidden: false })) : [];
+    if (questionId && supabaseAdmin) {
+      try {
+        const { data: hiddenData } = await supabaseAdmin
+          .from('question_hidden_tests')
+          .select('hidden_test_cases')
+          .eq('question_id', questionId)
+          .maybeSingle();
+
+        if (hiddenData?.hidden_test_cases && Array.isArray(hiddenData.hidden_test_cases)) {
+          const hiddenCases = hiddenData.hidden_test_cases.map(tc => ({
+            input: tc.input,
+            expectedOutput: tc.expectedOutput,
+            isHidden: true,
+          }));
+          allTestCases = [...allTestCases, ...hiddenCases];
+        }
+      } catch (err) {
+        console.warn('[MockMate Server] Failed to fetch hidden test cases:', err.message);
+      }
+    }
+
     // Clamp execution timeout
     const parsedTimeout = Number(timeoutMs);
     const safeTimeout = !isNaN(parsedTimeout)
@@ -58,9 +81,26 @@ router.post('/', async (req, res, next) => {
     const result = await executeCode({
       language: normalizedLang,
       code,
-      testCases: Array.isArray(testCases) ? testCases : [],
+      testCases: allTestCases,
       customInput: customInput != null ? String(customInput).slice(0, 50000) : null,
       timeoutMs: safeTimeout,
+    });
+
+    // Sanitize test results so hidden test case data is never exposed to the client
+    const sanitizedTestResults = (result.testResults || []).map((tr, idx) => {
+      const originalCase = allTestCases[idx];
+      if (originalCase && originalCase.isHidden) {
+        return {
+          index: tr.index,
+          isHidden: true,
+          input: 'Hidden Test Case (Content Protected)',
+          expectedOutput: 'Hidden Expected Output',
+          actualOutput: tr.passed ? 'Output matches expected' : 'Output did not match expected',
+          passed: tr.passed,
+          durationMs: tr.durationMs,
+        };
+      }
+      return tr;
     });
 
     let submissionId = null;
@@ -96,6 +136,7 @@ router.post('/', async (req, res, next) => {
 
     return res.json({
       ...result,
+      testResults: sanitizedTestResults,
       submissionId,
     });
   } catch (err) {

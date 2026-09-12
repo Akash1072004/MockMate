@@ -25,6 +25,7 @@ export default function CollaborativeCodeEditor({
   onResetTemplate,
   readOnly = false,
   interviewId = null,
+  questionId = null,
   testCases = [],
   onRunSuccess = null,
 }) {
@@ -82,6 +83,7 @@ export default function CollaborativeCodeEditor({
         testCases,
         customInput: customInput ? customInput : null,
         interviewId,
+        questionId,
       });
 
       setExecResult(res);
@@ -545,7 +547,7 @@ export default function CollaborativeCodeEditor({
                       }}
                     >
                       {t.passed ? <CheckCircle2 size={11} /> : <XCircle size={11} />}
-                      <span>Case {idx + 1}</span>
+                      <span>{t.isHidden ? `Hidden Case ${idx + 1}` : `Case ${idx + 1}`}</span>
                     </button>
                   ))}
                 </div>

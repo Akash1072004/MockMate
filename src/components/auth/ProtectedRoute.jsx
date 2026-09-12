@@ -4,10 +4,10 @@ import { useAuth } from '../../context/AuthContext';
 import { Loader2 } from 'lucide-react';
 
 export default function ProtectedRoute({ children, allowedRole }) {
-  const { user, role, loading } = useAuth();
+  const { user, profile, role, loading } = useAuth();
   const location = useLocation();
 
-  if (loading) {
+  if (loading || (user && !profile)) {
     return (
       <div style={{
         display: 'flex',
@@ -35,9 +35,11 @@ export default function ProtectedRoute({ children, allowedRole }) {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
+  const effectiveRole = profile?.role || role || 'candidate';
+
   // If a specific role is required and user has different role, redirect to their proper dashboard
-  if (allowedRole && role !== allowedRole) {
-    const targetDashboard = role === 'interviewer' ? '/interviewer/dashboard' : '/candidate/dashboard';
+  if (allowedRole && effectiveRole !== allowedRole) {
+    const targetDashboard = effectiveRole === 'interviewer' ? '/interviewer/dashboard' : '/candidate/dashboard';
     return <Navigate to={targetDashboard} replace />;
   }
 

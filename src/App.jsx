@@ -21,9 +21,9 @@ import NotFoundPage from './pages/NotFoundPage';
 
 // Automatic role-based dashboard router
 function RoleBasedDashboardRedirect() {
-  const { user, role, loading } = useAuth();
+  const { user, profile, role, loading } = useAuth();
 
-  if (loading) {
+  if (loading || (user && !profile)) {
     return <div className="container" style={{ padding: '5rem 1.5rem', textAlign: 'center' }}>Loading...</div>;
   }
 
@@ -31,7 +31,8 @@ function RoleBasedDashboardRedirect() {
     return <Navigate to="/login" replace />;
   }
 
-  return <Navigate to={role === 'interviewer' ? '/interviewer/dashboard' : '/candidate/dashboard'} replace />;
+  const effectiveRole = profile?.role || role || 'candidate';
+  return <Navigate to={effectiveRole === 'interviewer' ? '/interviewer/dashboard' : '/candidate/dashboard'} replace />;
 }
 
 export default function App() {

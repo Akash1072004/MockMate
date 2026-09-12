@@ -24,12 +24,24 @@ export default function LoginPage() {
 
     setLoading(true);
     try {
-      const data = await signIn({ email: email.trim(), password });
+      const authResult = await signIn({ email: email.trim(), password });
       
-      // Determine destination route
-      const role = data?.user?.user_metadata?.role;
-      const defaultDashboard = role === 'interviewer' ? '/interviewer/dashboard' : '/candidate/dashboard';
-      const redirectPath = location.state?.from?.pathname || defaultDashboard;
+      // Determine destination route using authenticated user's profile/role stored in Supabase
+      const resolvedRole = authResult?.profile?.role || authResult?.role || 'candidate';
+      const targetDashboard = resolvedRole === 'interviewer' ? '/interviewer/dashboard' : '/candidate/dashboard';
+      
+      // Only redirect to original location if compatible with user's role
+      const fromPath = location.state?.from?.pathname;
+      let redirectPath = targetDashboard;
+      if (fromPath) {
+        if (resolvedRole === 'interviewer' && fromPath.startsWith('/candidate')) {
+          redirectPath = targetDashboard;
+        } else if (resolvedRole === 'candidate' && fromPath.startsWith('/interviewer')) {
+          redirectPath = targetDashboard;
+        } else {
+          redirectPath = fromPath;
+        }
+      }
       
       navigate(redirectPath, { replace: true });
     } catch (err) {

@@ -10,7 +10,7 @@ export function AuthProvider({ children }) {
   const [loading, setLoading] = useState(true);
 
   // Fetch profile for authenticated user
-  const fetchProfile = async (userId, userEmail) => {
+  const fetchProfile = async (userId, userEmail, userMetadata) => {
     if (!supabase || !userId) {
       setProfile(null);
       return null;
@@ -32,7 +32,7 @@ export function AuthProvider({ children }) {
         return data;
       } else {
         // If profile doesn't exist yet, attempt to self-heal using user_metadata
-        const metadata = user?.user_metadata || {};
+        const metadata = userMetadata || user?.user_metadata || {};
         const fallbackProfile = {
           id: userId,
           full_name: metadata.full_name || userEmail?.split('@')[0] || 'User',
@@ -57,7 +57,16 @@ export function AuthProvider({ children }) {
       }
     } catch (err) {
       console.error('[MockMate Auth] Unexpected profile error:', err);
-      return null;
+      const metadata = userMetadata || user?.user_metadata || {};
+      const errProfile = {
+        id: userId,
+        full_name: metadata.full_name || userEmail?.split('@')[0] || 'User',
+        email: userEmail || '',
+        role: metadata.role === 'interviewer' ? 'interviewer' : 'candidate',
+        is_available: metadata.role === 'interviewer',
+      };
+      setProfile(errProfile);
+      return errProfile;
     }
   };
 
@@ -70,17 +79,14 @@ export function AuthProvider({ children }) {
     let mounted = true;
 
     // Get initial active session
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (!mounted) return;
       setSession(session);
       setUser(session?.user ?? null);
       if (session?.user) {
-        fetchProfile(session.user.id, session.user.email).finally(() => {
-          if (mounted) setLoading(false);
-        });
-      } else {
-        setLoading(false);
+        await fetchProfile(session.user.id, session.user.email, session.user.user_metadata);
       }
+      if (mounted) setLoading(false);
     }).catch(err => {
       console.error('[MockMate Auth] Session check error:', err);
       if (mounted) setLoading(false);
@@ -93,16 +99,14 @@ export function AuthProvider({ children }) {
         setSession(currentSession);
         setUser(currentSession?.user ?? null);
 
-        if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
-          if (currentSession?.user) {
-            await fetchProfile(currentSession.user.id, currentSession.user.email);
-          }
-        } else if (event === 'SIGNED_OUT') {
+        if (event === 'SIGNED_OUT') {
           setProfile(null);
           setUser(null);
           setSession(null);
+        } else if (currentSession?.user) {
+          await fetchProfile(currentSession.user.id, currentSession.user.email, currentSession.user.user_metadata);
         }
-        setLoading(false);
+        if (mounted) setLoading(false);
       }
     );
 
@@ -170,11 +174,20 @@ export function AuthProvider({ children }) {
 
     if (error) throw error;
 
+    let userProfile = null;
     if (data?.user) {
-      await fetchProfile(data.user.id, data.user.email);
+      setUser(data.user);
+      setSession(data.session);
+      userProfile = await fetchProfile(data.user.id, data.user.email, data.user.user_metadata);
     }
 
-    return data;
+    const resolvedRole = userProfile?.role || data?.user?.user_metadata?.role || 'candidate';
+
+    return {
+      ...data,
+      profile: userProfile,
+      role: resolvedRole,
+    };
   };
 
   // Sign out
@@ -208,18 +221,20 @@ export function AuthProvider({ children }) {
     return data;
   };
 
+  const effectiveRole = profile?.role || user?.user_metadata?.role || 'candidate';
+
   const value = {
     user,
     session,
     profile,
-    role: profile?.role || user?.user_metadata?.role || 'candidate',
-    loading,
+    role: effectiveRole,
+    loading: loading || (!!user && !profile),
     isConfigured: isSupabaseConfigured,
     signUp,
     signIn,
     signOut,
     updateProfile,
-    refreshProfile: () => user ? fetchProfile(user.id, user.email) : Promise.resolve(null),
+    refreshProfile: () => user ? fetchProfile(user.id, user.email, user.user_metadata) : Promise.resolve(null),
   };
 
   return (
