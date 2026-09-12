@@ -134,122 +134,49 @@ export async function updateAvailability(interviewerId, isAvailable) {
   return data;
 }
 
-// Accept an interview request and generate an associated interview session atomically
-export async function acceptInterviewRequest({ requestId, candidateId, candidateName, interviewerId, interviewerName }) {
+// Accept an interview request and generate an associated interview session atomically via database RPC
+export async function acceptInterviewRequest({ requestId }) {
   const targetRequestId = requestId || (typeof arguments[0] === 'string' ? arguments[0] : null);
   if (!supabase || !targetRequestId) {
-    throw new Error('Missing parameters to accept interview request');
+    throw new Error('Missing request ID to accept interview request');
   }
 
-  // 1. Invoke atomic database RPC: accept_interview_request
-  try {
-    const { data: rpcData, error: rpcError } = await supabase.rpc('accept_interview_request', {
-      p_request_id: targetRequestId,
-    });
+  // Canonical atomic RPC execution (strictly enforced at database level)
+  const { data: rpcData, error: rpcError } = await supabase.rpc('accept_interview_request', {
+    p_request_id: targetRequestId,
+  });
 
-    if (!rpcError && rpcData?.success) {
-      return {
-        request: rpcData.request,
-        interview: rpcData.interview,
-      };
-    }
-
-    if (rpcError) {
-      console.warn('[interviewerService] RPC accept_interview_request error, falling back if not found:', rpcError.message);
-      // If error is an actual validation/authorization failure from the DB, throw immediately
-      if (!rpcError.message.includes('function') && !rpcError.message.includes('does not exist')) {
-        throw new Error(rpcError.message);
-      }
-    }
-  } catch (err) {
-    if (!err.message.includes('function') && !err.message.includes('does not exist')) {
-      throw err;
-    }
+  if (rpcError) {
+    console.error('[interviewerService] accept_interview_request RPC error:', rpcError);
+    throw new Error(rpcError.message || 'Failed to accept interview request.');
   }
 
-  // 2. Direct fallback if database RPC is not yet created in the Supabase instance
-  const joinCode = 'MM-' + Math.random().toString(36).substring(2, 8).toUpperCase();
+  if (!rpcData || !rpcData.success) {
+    throw new Error('Database failed to accept interview request.');
+  }
 
-  const { data: interview, error: interviewError } = await supabase
-    .from('interviews')
-    .insert({
-      candidate_id: candidateId,
-      interviewer_id: interviewerId,
-      candidate_name: candidateName || 'Candidate',
-      interviewer_name: interviewerName || 'Interviewer',
-      interview_type: 'Technical',
-      difficulty: 'Medium',
-      duration: 45,
-      status: 'waiting',
-      join_code: joinCode,
-      is_ai: false,
-      request_id: targetRequestId,
-    })
-    .select()
-    .single();
-
-  if (interviewError) throw interviewError;
-
-  const { data: updatedRequest, error: requestError } = await supabase
-    .from('interview_requests')
-    .update({
-      status: 'accepted',
-      interview_id: interview.id,
-      join_code: joinCode,
-      responded_at: new Date().toISOString(),
-    })
-    .eq('id', targetRequestId)
-    .eq('interviewer_id', interviewerId)
-    .select()
-    .single();
-
-  if (requestError) throw requestError;
-
-  return { request: updatedRequest, interview };
+  return {
+    request: rpcData.request,
+    interview: rpcData.interview,
+  };
 }
 
-// Decline an interview request atomically
-export async function declineInterviewRequest(requestId, interviewerId) {
+// Decline an interview request atomically via database RPC
+export async function declineInterviewRequest(requestId) {
   if (!supabase || !requestId) {
-    throw new Error('Missing parameters to decline request');
+    throw new Error('Missing request ID to decline request');
   }
 
-  // 1. Invoke atomic database RPC: decline_interview_request
-  try {
-    const { data: rpcData, error: rpcError } = await supabase.rpc('decline_interview_request', {
-      p_request_id: requestId,
-    });
+  const { data: rpcData, error: rpcError } = await supabase.rpc('decline_interview_request', {
+    p_request_id: requestId,
+  });
 
-    if (!rpcError && rpcData?.success) {
-      return rpcData.request;
-    }
-
-    if (rpcError) {
-      console.warn('[interviewerService] RPC decline_interview_request error, falling back if not found:', rpcError.message);
-      if (!rpcError.message.includes('function') && !rpcError.message.includes('does not exist')) {
-        throw new Error(rpcError.message);
-      }
-    }
-  } catch (err) {
-    if (!err.message.includes('function') && !err.message.includes('does not exist')) {
-      throw err;
-    }
+  if (rpcError) {
+    console.error('[interviewerService] decline_interview_request RPC error:', rpcError);
+    throw new Error(rpcError.message || 'Failed to decline interview request.');
   }
 
-  // 2. Direct fallback
-  const { data, error } = await supabase
-    .from('interview_requests')
-    .update({
-      status: 'declined',
-      responded_at: new Date().toISOString(),
-    })
-    .eq('id', requestId)
-    .eq('interviewer_id', interviewerId)
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data;
+  return rpcData?.request;
 }
 
 // Compute ratings summary from reviews

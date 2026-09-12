@@ -168,6 +168,11 @@ CREATE INDEX IF NOT EXISTS idx_interviews_interviewer ON public.interviews(inter
 CREATE INDEX IF NOT EXISTS idx_interviews_join_code ON public.interviews(join_code);
 CREATE INDEX IF NOT EXISTS idx_reviews_interviewer ON public.reviews(interviewer_id);
 
+-- Prevent duplicate peer interviews for the same interview request
+CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_peer_interview_request 
+    ON public.interviews(request_id) 
+    WHERE request_id IS NOT NULL;
+
 -- ====================================================================
 -- 11. SECURITY TRIGGERS (DATA INTEGRITY & FIELD ENFORCEMENT)
 -- ====================================================================
@@ -181,7 +186,7 @@ BEGIN
     END IF;
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 DROP TRIGGER IF EXISTS trg_prevent_profile_role_change ON public.profiles;
 CREATE TRIGGER trg_prevent_profile_role_change
@@ -226,34 +231,28 @@ BEGIN
     NEW.candidate_id := OLD.candidate_id;
     NEW.interviewer_id := OLD.interviewer_id;
 
-    -- If updated by candidate: only permit pending -> cancelled
-    IF auth.uid() = OLD.candidate_id AND auth.role() != 'service_role' THEN
-        IF OLD.status != 'pending' OR NEW.status != 'cancelled' THEN
-            RAISE EXCEPTION 'Candidates can only cancel their own pending requests.';
-        END IF;
-        NEW.interview_id := OLD.interview_id;
-        NEW.join_code := OLD.join_code;
-        NEW.responded_at := now();
-    END IF;
-
-    -- If updated by interviewer directly: only permit pending -> declined
-    -- (Acceptance must be executed atomically via accept_interview_request RPC)
-    IF auth.uid() = OLD.interviewer_id AND auth.role() != 'service_role' THEN
-        IF OLD.status != 'pending' THEN
-            RAISE EXCEPTION 'Cannot modify request: already resolved with status %', OLD.status;
-        END IF;
-        IF NEW.status = 'declined' THEN
-            NEW.interview_id := NULL;
-            NEW.join_code := NULL;
-            NEW.responded_at := now();
-        ELSIF NEW.status = 'accepted' AND (NEW.interview_id IS NULL OR NEW.join_code IS NULL) THEN
-            RAISE EXCEPTION 'Acceptance requires an associated interview and join code. Use accept_interview_request RPC.';
+    -- Direct client updates to accepted/declined/cancelled are blocked
+    -- (Must be executed via secure SECURITY DEFINER RPCs)
+    IF auth.role() != 'service_role' THEN
+        IF auth.uid() = OLD.candidate_id THEN
+            IF OLD.status != 'pending' OR NEW.status != 'cancelled' THEN
+                RAISE EXCEPTION 'Candidates can only cancel their own pending requests via cancel_interview_request RPC.';
+            END IF;
+        ELSIF auth.uid() = OLD.interviewer_id THEN
+            IF OLD.status != 'pending' THEN
+                RAISE EXCEPTION 'Cannot modify request: already resolved with status %', OLD.status;
+            END IF;
+            IF NEW.status NOT IN ('accepted', 'declined') THEN
+                RAISE EXCEPTION 'Interviewers can only accept or decline requests via designated RPCs.';
+            END IF;
+        ELSE
+            RAISE EXCEPTION 'Unauthorized: You are not a participant in this request.';
         END IF;
     END IF;
 
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 DROP TRIGGER IF EXISTS trg_enforce_interview_request_security ON public.interview_requests;
 CREATE TRIGGER trg_enforce_interview_request_security
@@ -285,7 +284,7 @@ BEGIN
 
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
 DROP TRIGGER IF EXISTS trg_enforce_interview_update_security ON public.interviews;
 CREATE TRIGGER trg_enforce_interview_update_security
@@ -328,9 +327,16 @@ BEGIN
         RAISE EXCEPTION 'Cannot accept request: Current status is %', v_req.status;
     END IF;
 
-    -- 4. Fetch candidate and interviewer profiles
+    -- 4. Fetch candidate and interviewer profiles and verify active roles
     SELECT * INTO v_candidate FROM public.profiles WHERE id = v_req.candidate_id;
+    IF NOT FOUND OR v_candidate.role != 'candidate' THEN
+        RAISE EXCEPTION 'Candidate account not found or no longer has candidate role.';
+    END IF;
+
     SELECT * INTO v_interviewer FROM public.profiles WHERE id = v_req.interviewer_id;
+    IF NOT FOUND OR v_interviewer.role != 'interviewer' THEN
+        RAISE EXCEPTION 'Interviewer account not found or no longer has interviewer role.';
+    END IF;
 
     -- 5. Generate unique 6-character alphanumeric join code
     LOOP
@@ -506,10 +512,17 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
 
--- Grant execution of secure RPCs to authenticated users
+-- Explicitly revoke execution from PUBLIC and grant strictly to authenticated users
+REVOKE EXECUTE ON FUNCTION public.accept_interview_request(UUID) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.accept_interview_request(UUID) TO authenticated;
+
+REVOKE EXECUTE ON FUNCTION public.decline_interview_request(UUID) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.decline_interview_request(UUID) TO authenticated;
+
+REVOKE EXECUTE ON FUNCTION public.cancel_interview_request(UUID) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.cancel_interview_request(UUID) TO authenticated;
+
+REVOKE EXECUTE ON FUNCTION public.join_interview_by_code(TEXT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.join_interview_by_code(TEXT) TO authenticated;
 
 -- ====================================================================
@@ -569,11 +582,13 @@ CREATE POLICY "Candidates can create requests" ON public.interview_requests
         AND EXISTS (SELECT 1 FROM public.profiles p WHERE p.id = interviewer_id AND p.role = 'interviewer')
     );
 
+-- NOTE: Direct client UPDATE on interview_requests is strictly prohibited.
+-- All state transitions (accepted, declined, cancelled) must be performed
+-- exclusively via the atomic SECURITY DEFINER RPCs:
+-- accept_interview_request(), decline_interview_request(), cancel_interview_request().
 DROP POLICY IF EXISTS "Authorized users can update request" ON public.interview_requests;
-CREATE POLICY "Authorized users can update request" ON public.interview_requests
-    FOR UPDATE TO authenticated
-    USING (auth.uid() = candidate_id OR auth.uid() = interviewer_id)
-    WITH CHECK (auth.uid() = candidate_id OR auth.uid() = interviewer_id);
+DROP POLICY IF EXISTS "Authenticated users can update requests" ON public.interview_requests;
+DROP POLICY IF EXISTS "Users can update requests" ON public.interview_requests;
 
 -- --------------------------------------------------------------------
 -- C. INTERVIEWS POLICIES
@@ -583,38 +598,18 @@ CREATE POLICY "Participants can view their interviews" ON public.interviews
     FOR SELECT TO authenticated
     USING (auth.uid() = candidate_id OR auth.uid() = interviewer_id);
 
+-- Candidates may directly insert AI mock interviews only.
+-- Peer interviews can NEVER be inserted directly by normal authenticated clients;
+-- they are created exclusively via the atomic accept_interview_request() RPC.
 DROP POLICY IF EXISTS "Candidates can create AI or peer interviews" ON public.interviews;
 DROP POLICY IF EXISTS "Candidates can create AI interviews" ON public.interviews;
 DROP POLICY IF EXISTS "Authorized users can create interviews" ON public.interviews;
-CREATE POLICY "Authorized users can create interviews" ON public.interviews
+CREATE POLICY "Candidates can create AI interviews" ON public.interviews
     FOR INSERT TO authenticated
     WITH CHECK (
-        -- AI interviews: created directly by candidate, no peer interviewer
-        (
-            auth.uid() = candidate_id 
-            AND is_ai = true 
-            AND interviewer_id IS NULL
-        )
-        OR
-        -- Peer interviews: must verify accepted request matching candidate and interviewer
-        (
-            is_ai = false 
-            AND interviewer_id IS NOT NULL 
-            AND (auth.uid() = candidate_id OR auth.uid() = interviewer_id)
-            AND request_id IS NOT NULL
-            AND EXISTS (
-                SELECT 1 FROM public.interview_requests r
-                WHERE r.id = request_id
-                  AND r.candidate_id = public.interviews.candidate_id
-                  AND r.interviewer_id = public.interviews.interviewer_id
-                  AND r.status = 'accepted'
-            )
-            AND EXISTS (
-                SELECT 1 FROM public.profiles p
-                WHERE p.id = public.interviews.interviewer_id
-                  AND p.role = 'interviewer'
-            )
-        )
+        auth.uid() = candidate_id 
+        AND is_ai = true 
+        AND interviewer_id IS NULL
     );
 
 DROP POLICY IF EXISTS "Participants can update their interviews" ON public.interviews;
@@ -736,10 +731,18 @@ CREATE POLICY "Candidates can insert review for completed peer interview" ON pub
         )
     );
 
+-- Reviews are strictly immutable: no UPDATE or DELETE permitted
+DROP POLICY IF EXISTS "Users can update reviews" ON public.reviews;
+DROP POLICY IF EXISTS "Users can delete reviews" ON public.reviews;
+DROP POLICY IF EXISTS "Candidates can update reviews" ON public.reviews;
+DROP POLICY IF EXISTS "Candidates can delete reviews" ON public.reviews;
+
 -- ====================================================================
--- 14. LEADERBOARD VIEW
+-- 14. LEADERBOARD VIEW & RPC (GLOBAL VISIBILITY)
 -- ====================================================================
-CREATE OR REPLACE VIEW public.candidate_leaderboard AS
+-- security_invoker = false ensures aggregation sees all completed interviews
+-- regardless of caller's individual table RLS filters.
+CREATE OR REPLACE VIEW public.candidate_leaderboard WITH (security_invoker = false) AS
 SELECT 
     p.id AS candidate_id,
     p.full_name AS candidate_name,
@@ -753,6 +756,35 @@ WHERE i.status = 'completed' AND i.score IS NOT NULL
 GROUP BY p.id, p.full_name, p.github;
 
 GRANT SELECT ON public.candidate_leaderboard TO authenticated;
+
+-- Canonical RPC to query global leaderboard without RLS table truncation
+CREATE OR REPLACE FUNCTION public.get_candidate_leaderboard()
+RETURNS TABLE (
+    candidate_id UUID,
+    candidate_name TEXT,
+    github TEXT,
+    interview_count BIGINT,
+    average_score NUMERIC,
+    rank BIGINT
+)
+SECURITY DEFINER
+SET search_path = public
+LANGUAGE sql AS $$
+    SELECT 
+        p.id AS candidate_id,
+        p.full_name AS candidate_name,
+        p.github,
+        COUNT(i.id) AS interview_count,
+        ROUND(AVG(i.score), 1) AS average_score,
+        DENSE_RANK() OVER (ORDER BY ROUND(AVG(i.score), 1) DESC, COUNT(i.id) DESC) AS rank
+    FROM public.profiles p
+    JOIN public.interviews i ON p.id = i.candidate_id
+    WHERE i.status = 'completed' AND i.score IS NOT NULL
+    GROUP BY p.id, p.full_name, p.github;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.get_candidate_leaderboard() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.get_candidate_leaderboard() TO authenticated;
 
 -- ====================================================================
 -- 15. SAFE REALTIME PUBLICATION SETUP (IDEMPOTENT)

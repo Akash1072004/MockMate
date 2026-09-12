@@ -105,46 +105,20 @@ export async function getCandidateRank(candidateId) {
   }
 }
 
-// Cancel a pending interview request atomically
-export async function cancelInterviewRequest(requestId, candidateId) {
+// Cancel a pending interview request atomically via database RPC
+export async function cancelInterviewRequest(requestId) {
   if (!supabase || !requestId) throw new Error('Invalid request parameters');
 
-  // 1. Invoke atomic database RPC: cancel_interview_request
-  try {
-    const { data: rpcData, error: rpcError } = await supabase.rpc('cancel_interview_request', {
-      p_request_id: requestId,
-    });
+  const { data: rpcData, error: rpcError } = await supabase.rpc('cancel_interview_request', {
+    p_request_id: requestId,
+  });
 
-    if (!rpcError && rpcData?.success) {
-      return rpcData.request;
-    }
-
-    if (rpcError) {
-      console.warn('[candidateService] RPC cancel_interview_request error, falling back if not found:', rpcError.message);
-      if (!rpcError.message.includes('function') && !rpcError.message.includes('does not exist')) {
-        throw new Error(rpcError.message);
-      }
-    }
-  } catch (err) {
-    if (!err.message.includes('function') && !err.message.includes('does not exist')) {
-      throw err;
-    }
+  if (rpcError) {
+    console.error('[candidateService] cancel_interview_request RPC error:', rpcError);
+    throw new Error(rpcError.message || 'Failed to cancel interview request.');
   }
 
-  // 2. Direct fallback
-  const { data, error } = await supabase
-    .from('interview_requests')
-    .update({ 
-      status: 'cancelled',
-      responded_at: new Date().toISOString()
-    })
-    .eq('id', requestId)
-    .eq('candidate_id', candidateId)
-    .select()
-    .single();
-
-  if (error) throw error;
-  return data;
+  return rpcData?.request;
 }
 
 // Compute statistics from verified interviews list
