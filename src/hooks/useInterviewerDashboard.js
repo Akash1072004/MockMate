@@ -113,7 +113,7 @@ export function useInterviewerDashboard() {
     }
   };
 
-  const handleAcceptRequest = async (request) => {
+  const handleAcceptRequest = async (request, scheduleOptions = {}) => {
     if (!user?.id || !request) return;
     try {
       const result = await acceptInterviewRequest({
@@ -122,6 +122,8 @@ export function useInterviewerDashboard() {
         candidateName: request.candidate_name,
         interviewerId: user.id,
         interviewerName: profile?.full_name || 'Interviewer',
+        scheduledAt: scheduleOptions.scheduledAt || null,
+        duration: scheduleOptions.duration || null,
       });
       await loadData(true);
       return result;

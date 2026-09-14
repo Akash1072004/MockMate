@@ -6,6 +6,7 @@ import { getInterviewById, updateInterviewStatus } from '../services/interviewSe
 import { useWebRTC } from '../hooks/useWebRTC';
 import { useCollaborativeCode } from '../hooks/useCollaborativeCode';
 import CollaborativeCodeEditor from '../components/interview/CollaborativeCodeEditor';
+import VideoTile from '../components/interview/VideoTile';
 import { 
   Video, 
   VideoOff, 
@@ -30,7 +31,12 @@ import {
   ChevronRight,
   Info,
   Check,
-  Award
+  XCircle,
+  Award,
+  User,
+  ExternalLink,
+  Download,
+  Eye
 } from 'lucide-react';
 import { getInterviewSubmissions } from '../services/codeExecutionService';
 import ReviewModal from '../components/interview/ReviewModal';
@@ -38,19 +44,20 @@ import { getReviewByInterviewId } from '../services/reviewService';
 import { 
   getInterviewQuestions, 
   addQuestionToInterview, 
+  removeQuestionFromInterview,
   setActiveInterviewQuestion, 
   DEFAULT_SEED_QUESTIONS 
 } from '../services/questionService';
 import QuestionBankModal from '../components/questions/QuestionBankModal';
+import { getCandidateResume, hasResume } from '../services/resumeService';
+import LeetCodeQuestionPanel from '../components/interview/LeetCodeQuestionPanel';
 
-export default function InterviewRoomPage() {
-  const { id: interviewId } = useParams();
-  const { user, profile } = useAuth();
+function AuthorizedInterviewRoom({ interviewId, initialInterview, initialUserRole, user, profile }) {
   const navigate = useNavigate();
 
-  const [interview, setInterview] = useState(null);
-  const [userRole, setUserRole] = useState('candidate'); // 'candidate' | 'interviewer'
-  const [loading, setLoading] = useState(true);
+  const [interview, setInterview] = useState(initialInterview);
+  const [userRole, setUserRole] = useState(initialUserRole || 'candidate'); // 'candidate' | 'interviewer'
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
   // Questions state
@@ -59,17 +66,103 @@ export default function InterviewRoomPage() {
   const [showQuestionBankModal, setShowQuestionBankModal] = useState(false);
 
   // Active room side tabs
-  const [sideTab, setSideTab] = useState('video'); // 'video' | 'notes' | 'submissions'
+  const [sideTab, setSideTab] = useState('video'); // 'video' | 'notes' | 'submissions' | 'candidate'
   const [notes, setNotes] = useState('');
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [submissions, setSubmissions] = useState([]);
   const [showReviewModal, setShowReviewModal] = useState(false);
   const [existingReview, setExistingReview] = useState(null);
 
+  // Candidate Profile & Resume state (Phase 17)
+  const [candidateProfile, setCandidateProfile] = useState(null);
+  const [candidateResume, setCandidateResume] = useState(null);
+  const [showResumeModal, setShowResumeModal] = useState(false);
+  const [candidateHasResume, setCandidateHasResume] = useState(true);
+
+  useEffect(() => {
+    if (interview?.candidate_id) {
+      supabase
+        .from('profiles')
+        .select('id, full_name, headline, bio, skills, github, linkedin, portfolio, leetcode, codeforces, codechef, username')
+        .eq('id', interview.candidate_id)
+        .maybeSingle()
+        .then(({ data }) => {
+          if (data) setCandidateProfile(data);
+        });
+
+      getCandidateResume(interview.candidate_id).then((res) => {
+        setCandidateResume(res);
+      });
+
+      if (user?.id === interview.candidate_id) {
+        hasResume(user.id).then((ok) => setCandidateHasResume(ok));
+      }
+    }
+  }, [interview?.candidate_id, user?.id]);
+
   // Derive active question object
   const activeQuestion = questions.find(
     (q) => (q.question_id && q.question_id === activeQuestionId) || q.id === activeQuestionId
   ) || questions[0] || DEFAULT_SEED_QUESTIONS[0];
+
+  // Derive available languages from active question
+  const availableLanguages = React.useMemo(() => {
+    if (Array.isArray(activeQuestion?.supported_languages) && activeQuestion.supported_languages.length > 0) {
+      return activeQuestion.supported_languages;
+    }
+    if (activeQuestion?.starter_code && typeof activeQuestion.starter_code === 'object') {
+      const keys = Object.keys(activeQuestion.starter_code).filter(k => Boolean(activeQuestion.starter_code[k]));
+      if (keys.length > 0) return keys;
+    }
+    return ['python', 'cpp', 'java'];
+  }, [activeQuestion]);
+
+  // Draggable resizable panels state (Part 7)
+  const [questionPanelWidth, setQuestionPanelWidth] = useState(() => {
+    const saved = localStorage.getItem('mockmate_panel_width');
+    const num = Number(saved);
+    return !isNaN(num) && num >= 260 && num <= 700 ? num : 380;
+  });
+  const [isResizing, setIsResizing] = useState(false);
+
+  const handleMouseDownResize = (e) => {
+    e.preventDefault();
+    setIsResizing(true);
+  };
+
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMove = (e) => {
+      const newWidth = Math.max(260, Math.min(e.clientX, Math.min(window.innerWidth - 450, 700)));
+      setQuestionPanelWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+      setQuestionPanelWidth((w) => {
+        localStorage.setItem('mockmate_panel_width', String(w));
+        return w;
+      });
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizing]);
+
+  const handleRemoveAssignedQuestion = async (qId) => {
+    if (userRole !== 'interviewer') return;
+    try {
+      await removeQuestionFromInterview(qId);
+      await loadQuestions();
+    } catch (err) {
+      alert('Failed to remove problem: ' + err.message);
+    }
+  };
 
   const loadSubmissions = async () => {
     if (interviewId) {
@@ -117,11 +210,43 @@ export default function InterviewRoomPage() {
     }
   }, [interview?.active_question_id, questions]);
 
-  // WebRTC Audio/Video Hook
+  // Detect if interview is scheduled for a future timestamp and has not started
+  const isScheduledFuture = Boolean(
+    interview?.start_time &&
+    new Date(interview.start_time).getTime() > Date.now() &&
+    interview?.status !== 'active'
+  );
+
+  const [scheduledCountdown, setScheduledCountdown] = useState('');
+
+  useEffect(() => {
+    if (!isScheduledFuture || !interview?.start_time) return;
+
+    const updateCountdown = () => {
+      const diff = new Date(interview.start_time).getTime() - Date.now();
+      if (diff <= 0) {
+        setScheduledCountdown('Ready to start');
+        return;
+      }
+      const hours = Math.floor(diff / 3600000);
+      const minutes = Math.floor((diff % 3600000) / 60000);
+      const seconds = Math.floor((diff % 60000) / 1000);
+      setScheduledCountdown(
+        `${hours > 0 ? `${hours}h ` : ''}${minutes}m ${seconds}s`
+      );
+    };
+
+    updateCountdown();
+    const timer = setInterval(updateCountdown, 1000);
+    return () => clearInterval(timer);
+  }, [isScheduledFuture, interview?.start_time]);
+
+  // WebRTC Audio/Video Hook (Only initialized when participant is authorized and session is explicitly active)
   const webrtc = useWebRTC({
     interviewId,
     userId: user?.id,
-    enabled: interview?.status === 'active' || interview?.status === 'waiting',
+    userRole: userRole || initialUserRole || 'candidate',
+    enabled: !loading && !error && Boolean(interview) && interview?.status === 'active' && (userRole === 'candidate' || userRole === 'interviewer'),
   });
 
   // Collaborative Code Editor Hook
@@ -132,24 +257,8 @@ export default function InterviewRoomPage() {
     initialCode: interview?.code,
     initialLanguage: interview?.language,
     starterCodeByLang: activeQuestion?.starter_code || null,
+    availableLanguages,
   });
-
-  const localVideoRef = useRef(null);
-  const remoteVideoRef = useRef(null);
-
-  // Bind local stream
-  useEffect(() => {
-    if (localVideoRef.current && webrtc.localStream) {
-      localVideoRef.current.srcObject = webrtc.localStream;
-    }
-  }, [webrtc.localStream]);
-
-  // Bind remote stream
-  useEffect(() => {
-    if (remoteVideoRef.current && webrtc.remoteStream) {
-      remoteVideoRef.current.srcObject = webrtc.remoteStream;
-    }
-  }, [webrtc.remoteStream]);
 
   // Load interview and verify participant authorization
   const loadInterview = async () => {
@@ -193,7 +302,26 @@ export default function InterviewRoomPage() {
         },
         (payload) => {
           if (payload.new) {
-            setInterview(payload.new);
+            if (payload.new.status === 'completed') {
+              try {
+                webrtc?.stop?.();
+              } catch (_) {}
+              if (userRole === 'candidate') {
+                navigate(`/interview/results/${interviewId}`, { replace: true });
+                return;
+              } else if (userRole === 'interviewer') {
+                navigate(`/interview/evaluate/${interviewId}`, { replace: true });
+                return;
+              }
+            }
+            setInterview((prev) => {
+              if (!prev) return payload.new;
+              return {
+                ...payload.new,
+                code: prev.code,
+                language: prev.language,
+              };
+            });
             if (payload.new.active_question_id) {
               setActiveQuestionId(payload.new.active_question_id);
             }
@@ -275,6 +403,21 @@ export default function InterviewRoomPage() {
   };
 
   const handleEndInterview = async () => {
+    if (userRole === 'interviewer') {
+      if (window.confirm('End live interview session and proceed to candidate evaluation?')) {
+        try {
+          try {
+            webrtc?.stop?.();
+          } catch (_) {}
+          await updateInterviewStatus(interview.id, 'completed', user.id);
+        } catch (err) {
+          console.error('[InterviewRoom] Error updating interview status to completed:', err);
+        }
+        navigate(`/interview/evaluate/${interview.id}`);
+      }
+      return;
+    }
+
     if (userRole === 'candidate' && interview?.interviewer_id && !existingReview) {
       if (window.confirm('Would you like to rate your interviewer before leaving?')) {
         setShowReviewModal(true);
@@ -283,16 +426,7 @@ export default function InterviewRoomPage() {
     }
 
     if (!window.confirm('Are you sure you want to exit this interview session?')) return;
-    try {
-      if (userRole === 'interviewer') {
-        await updateInterviewStatus(interview.id, 'completed', user.id);
-        navigate('/interviewer/dashboard');
-      } else {
-        navigate('/candidate/dashboard');
-      }
-    } catch (err) {
-      alert('Failed to exit interview: ' + err.message);
-    }
+    navigate('/candidate/dashboard');
   };
 
   const formatTimer = (seconds) => {
@@ -312,35 +446,10 @@ export default function InterviewRoomPage() {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="container" style={{ padding: '6rem 1.5rem', textAlign: 'center' }}>
-        <RotateCw size={36} style={{ animation: 'spin 1s linear infinite', margin: '0 auto 1rem auto', color: 'var(--accent-primary)' }} />
-        <h2>Connecting to Interview Room...</h2>
-        <p style={{ color: 'var(--text-secondary)' }}>Validating participant security and join code</p>
-      </div>
-    );
-  }
+  if (!interview) return null;
 
-  if (error || !interview) {
-    return (
-      <div className="container" style={{ padding: '5rem 1.5rem', maxWidth: '540px' }}>
-        <div className="card" style={{ textAlign: 'center', padding: '3rem 2rem' }}>
-          <ShieldAlert size={48} color="#ef4444" style={{ margin: '0 auto 1rem auto' }} />
-          <h2 style={{ fontSize: '1.6rem', marginBottom: '0.75rem' }}>Access Denied</h2>
-          <p style={{ color: 'var(--text-secondary)', marginBottom: '1.5rem' }}>
-            {error || 'This interview room does not exist or you do not have permission to join.'}
-          </p>
-          <Link to="/dashboard" className="btn btn-primary">
-            Return to Dashboard
-          </Link>
-        </div>
-      </div>
-    );
-  }
-
-  // 1. WAITING ROOM VIEW (status === 'waiting')
-  if (interview.status === 'waiting') {
+  // 1. WAITING ROOM VIEW (status === 'waiting' || status === 'scheduled')
+  if (interview.status === 'waiting' || interview.status === 'scheduled') {
     return (
       <div className="container" style={{ padding: '3.5rem 1.5rem', maxWidth: '820px' }}>
         <div className="card" style={{ padding: '2.5rem 2.5rem', textAlign: 'center' }}>
@@ -355,12 +464,101 @@ export default function InterviewRoomPage() {
             Join Code: <strong style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{interview.join_code}</strong> | Difficulty: <strong>{interview.difficulty}</strong>
           </p>
 
+          {/* Scheduled Countdown Alert (Section 9) */}
+          {isScheduledFuture && (
+            <div
+              style={{
+                background: 'rgba(168, 85, 247, 0.12)',
+                border: '1px solid rgba(168, 85, 247, 0.35)',
+                borderRadius: 'var(--radius-md)',
+                padding: '1.25rem 1.5rem',
+                marginBottom: '1.5rem',
+                textAlign: 'center',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.5rem', color: '#c084fc', fontWeight: 700, fontSize: '1.05rem', marginBottom: '0.35rem' }}>
+                <Clock size={20} />
+                <span>Interview Scheduled</span>
+              </div>
+              <p style={{ color: '#e9d5ff', fontSize: '0.9rem', margin: '0 0 0.75rem 0' }}>
+                Scheduled for {new Date(interview.start_time).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })} at {new Date(interview.start_time).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })} ({interview.duration || 60} min)
+              </p>
+              <div style={{
+                display: 'inline-block',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '1.4rem',
+                fontWeight: 700,
+                color: '#a855f7',
+                background: 'rgba(0,0,0,0.3)',
+                padding: '0.35rem 1rem',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid rgba(168, 85, 247, 0.25)',
+              }}>
+                Starts in: {scheduledCountdown}
+              </div>
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.75rem', marginBottom: 0 }}>
+                Camera, microphone, and live collaborative IDE will automatically initialize when the interview starts.
+              </p>
+            </div>
+          )}
+
+          {/* Candidate Resume Prerequisite Notice */}
+          {userRole === 'candidate' && !candidateHasResume && (
+            <div
+              className="alert alert-warning"
+              style={{
+                marginBottom: '1.5rem',
+                textAlign: 'left',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                flexWrap: 'wrap',
+                gap: '1rem',
+                padding: '1rem 1.25rem',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <FileText size={22} color="#f59e0b" style={{ flexShrink: 0 }} />
+                <div>
+                  <strong style={{ color: '#f59e0b' }}>Resume Required Before Starting</strong>
+                  <p style={{ margin: '0.2rem 0 0 0', fontSize: '0.85rem' }}>
+                    Please upload your resume in your profile so your interviewer can review your experience and tailor technical questions.
+                  </p>
+                </div>
+              </div>
+              <Link to="/profile" className="btn btn-primary btn-sm">
+                Upload Resume
+              </Link>
+            </div>
+          )}
+
           {/* Participants Card */}
           <div style={{ background: 'var(--bg-input)', borderRadius: 'var(--radius-md)', padding: '1.25rem 1.5rem', marginBottom: '1.5rem', textAlign: 'left', border: '1px solid var(--border-subtle)' }}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
               <div>
                 <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Candidate:</span>
                 <div style={{ fontWeight: 700, fontSize: '1rem' }}>{interview.candidate_name}</div>
+                <div style={{ marginTop: '0.35rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  {candidateResume ? (
+                    <span className="badge badge-success" style={{ fontSize: '0.7rem' }}>
+                      Resume: {candidateResume.fileName}
+                    </span>
+                  ) : (
+                    <span className="badge badge-secondary" style={{ fontSize: '0.7rem', color: '#f87171' }}>
+                      No Resume Uploaded
+                    </span>
+                  )}
+                  {candidateResume && (
+                    <button
+                      type="button"
+                      onClick={() => setShowResumeModal(true)}
+                      className="btn btn-outline btn-sm"
+                      style={{ padding: '0.1rem 0.4rem', fontSize: '0.7rem' }}
+                    >
+                      <Eye size={11} /> View
+                    </button>
+                  )}
+                </div>
               </div>
               <div>
                 <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Interviewer:</span>
@@ -425,17 +623,38 @@ export default function InterviewRoomPage() {
                     </div>
                   </div>
 
-                  <span style={{
-                    fontSize: '0.75rem',
-                    fontWeight: 600,
-                    padding: '0.2rem 0.6rem',
-                    borderRadius: 9999,
-                    background: `${getDifficultyColor(q.difficulty)}15`,
-                    color: getDifficultyColor(q.difficulty),
-                    border: `1px solid ${getDifficultyColor(q.difficulty)}40`
-                  }}>
-                    {q.difficulty}
-                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <span style={{
+                      fontSize: '0.75rem',
+                      fontWeight: 600,
+                      padding: '0.2rem 0.6rem',
+                      borderRadius: 9999,
+                      background: `${getDifficultyColor(q.difficulty)}15`,
+                      color: getDifficultyColor(q.difficulty),
+                      border: `1px solid ${getDifficultyColor(q.difficulty)}40`
+                    }}>
+                      {q.difficulty}
+                    </span>
+
+                    {userRole === 'interviewer' && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveAssignedQuestion(q.id)}
+                        title="Remove question from interview"
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: '#f87171',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          padding: '0.25rem',
+                        }}
+                      >
+                        <XCircle size={15} />
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -444,52 +663,150 @@ export default function InterviewRoomPage() {
           {/* Device Pre-Check */}
           <div style={{ background: 'var(--bg-input)', borderRadius: 'var(--radius-md)', padding: '1.25rem 1.5rem', marginBottom: '2rem', textAlign: 'left', border: '1px solid var(--border-subtle)' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
-              <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>Audio & Video Device Check</span>
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <button 
-                  onClick={webrtc.toggleCamera} 
-                  className={`btn btn-sm ${webrtc.isCameraOn ? 'btn-primary' : 'btn-outline'}`}
-                >
-                  {webrtc.isCameraOn ? <Video size={14} /> : <VideoOff size={14} />}
-                  <span>{webrtc.isCameraOn ? 'Camera On' : 'Camera Off'}</span>
-                </button>
-                <button 
-                  onClick={webrtc.toggleMic} 
-                  className={`btn btn-sm ${webrtc.isMicOn ? 'btn-primary' : 'btn-outline'}`}
-                >
-                  {webrtc.isMicOn ? <Mic size={14} /> : <MicOff size={14} />}
-                  <span>{webrtc.isMicOn ? 'Mic On' : 'Mic Muted'}</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Local Camera Test Preview */}
-            <div style={{
-              height: '180px',
-              background: '#0a0e17',
-              borderRadius: 'var(--radius-md)',
-              overflow: 'hidden',
-              position: 'relative',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              border: '1px solid rgba(255, 255, 255, 0.08)'
-            }}>
-              {webrtc.isCameraOn ? (
-                <video
-                  ref={localVideoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                />
-              ) : (
-                <div style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
-                  <VideoOff size={32} style={{ margin: '0 auto 0.5rem auto' }} />
-                  <p style={{ fontSize: '0.85rem' }}>Camera is currently turned off</p>
+              <span style={{ fontSize: '0.9rem', fontWeight: 600 }}>Audio & Video Devices</span>
+              {!isScheduledFuture && (
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                  <button 
+                    onClick={webrtc.toggleCamera} 
+                    className={`btn btn-sm ${webrtc.isCameraOn ? 'btn-primary' : 'btn-outline'}`}
+                  >
+                    {webrtc.isCameraOn ? <Video size={14} /> : <VideoOff size={14} />}
+                    <span>{webrtc.isCameraOn ? 'Camera On' : 'Camera Off'}</span>
+                  </button>
+                  <button 
+                    onClick={webrtc.toggleMic} 
+                    className={`btn btn-sm ${webrtc.isMicOn ? 'btn-primary' : 'btn-outline'}`}
+                  >
+                    {webrtc.isMicOn ? <Mic size={14} /> : <MicOff size={14} />}
+                    <span>{webrtc.isMicOn ? 'Mic On' : 'Mic Muted'}</span>
+                  </button>
                 </div>
               )}
             </div>
+
+            {isScheduledFuture ? (
+              <div style={{
+                padding: '1.5rem',
+                textAlign: 'center',
+                background: 'rgba(0,0,0,0.2)',
+                borderRadius: 'var(--radius-md)',
+                color: 'var(--text-secondary)',
+                border: '1px dashed var(--border-subtle)',
+              }}>
+                <Clock size={24} style={{ margin: '0 auto 0.5rem auto', color: '#a855f7' }} />
+                <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: '0.25rem' }}>
+                  Devices on Standby
+                </div>
+                <div style={{ fontSize: '0.85rem' }}>
+                  MockMate will request camera and microphone permissions when the scheduled session starts.
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* Permission Prompt or Denied Banner */}
+                {webrtc.permissionStatus === 'denied' && (
+                  <div style={{
+                    background: 'rgba(239, 68, 68, 0.12)',
+                    border: '1px solid rgba(239, 68, 68, 0.3)',
+                    borderRadius: 'var(--radius-md)',
+                    padding: '0.85rem 1rem',
+                    marginBottom: '1rem',
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: '0.75rem',
+                    color: '#fca5a5',
+                  }}>
+                    <AlertCircle size={20} style={{ flexShrink: 0, marginTop: '2px', color: '#ef4444' }} />
+                    <div style={{ flex: 1, fontSize: '0.85rem' }}>
+                      <div style={{ fontWeight: 600, color: '#f87171', marginBottom: '0.2rem' }}>
+                        Camera/microphone permission was denied.
+                      </div>
+                      <div style={{ color: '#cbd5e1', marginBottom: '0.5rem' }}>
+                        Please allow camera and microphone access in your browser settings and try again.
+                      </div>
+                      <button 
+                        onClick={webrtc.requestMediaPermissions}
+                        className="btn btn-sm btn-outline"
+                        style={{ borderColor: 'rgba(239, 68, 68, 0.5)', color: '#fff' }}
+                      >
+                        Enable Camera & Microphone
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {webrtc.permissionStatus === 'prompt' && !webrtc.localStream && (
+                  <div style={{
+                    background: 'rgba(59, 130, 246, 0.12)',
+                    border: '1px solid rgba(59, 130, 246, 0.3)',
+                    borderRadius: 'var(--radius-md)',
+                    padding: '0.85rem 1rem',
+                    marginBottom: '1rem',
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: '0.75rem',
+                    color: '#93c5fd',
+                  }}>
+                    <Info size={20} style={{ flexShrink: 0, marginTop: '2px', color: '#3b82f6' }} />
+                    <div style={{ flex: 1, fontSize: '0.85rem' }}>
+                      <div style={{ fontWeight: 600, color: '#60a5fa', marginBottom: '0.2rem' }}>
+                        Camera & Microphone Required
+                      </div>
+                      <div style={{ color: '#cbd5e1', marginBottom: '0.5rem' }}>
+                        MockMate needs access to your camera and microphone for the interview.
+                      </div>
+                      <button 
+                        onClick={webrtc.requestMediaPermissions}
+                        className="btn btn-sm btn-primary"
+                      >
+                        Enable Camera & Microphone
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {webrtc.permissionStatus === 'error' && (
+                  <div style={{
+                    background: 'rgba(245, 158, 11, 0.12)',
+                    border: '1px solid rgba(245, 158, 11, 0.3)',
+                    borderRadius: 'var(--radius-md)',
+                    padding: '0.85rem 1rem',
+                    marginBottom: '1rem',
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: '0.75rem',
+                    color: '#fde68a',
+                  }}>
+                    <AlertCircle size={20} style={{ flexShrink: 0, marginTop: '2px', color: '#f59e0b' }} />
+                    <div style={{ flex: 1, fontSize: '0.85rem' }}>
+                      <div style={{ fontWeight: 600, color: '#fbbf24', marginBottom: '0.2rem' }}>
+                        Media Device Issue
+                      </div>
+                      <div style={{ color: '#cbd5e1', marginBottom: '0.5rem' }}>
+                        {webrtc.permissionError || 'Could not access camera or microphone.'}
+                      </div>
+                      <button 
+                        onClick={webrtc.requestMediaPermissions}
+                        className="btn btn-sm btn-outline"
+                      >
+                        Retry Connection
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Local Camera Test Preview */}
+                <VideoTile
+                  stream={webrtc.localStream}
+                  isLocal={true}
+                  isCameraOn={webrtc.isCameraOn}
+                  isMicOn={webrtc.isMicOn}
+                  participantName="Your Camera"
+                  role={userRole}
+                  height="180px"
+                />
+              </>
+            )}
           </div>
 
           {userRole === 'interviewer' ? (
@@ -566,18 +883,24 @@ export default function InterviewRoomPage() {
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
           {/* WebRTC Connection Status */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', fontSize: '0.8rem' }}>
             <span 
               style={{ 
                 width: 8, 
                 height: 8, 
                 borderRadius: '50%', 
-                background: webrtc.connectionState === 'connected' ? '#10b981' : webrtc.connectionState === 'connecting' ? '#f59e0b' : '#6b7280',
+                background: webrtc.connectionState === 'connected' ? '#10b981' : (webrtc.connectionState === 'connecting' || webrtc.connectionState === 'reconnecting') ? '#f59e0b' : '#6b7280',
                 boxShadow: webrtc.connectionState === 'connected' ? '0 0 6px #10b981' : 'none'
               }} 
             />
-            <span style={{ color: 'var(--text-secondary)' }}>
-              {webrtc.connectionState === 'connected' ? 'P2P Connected' : webrtc.connectionState === 'connecting' ? 'Connecting WebRTC...' : 'WebRTC Ready'}
+            <span style={{ color: 'var(--text-secondary)', fontWeight: 500 }}>
+              {webrtc.connectionState === 'connected' 
+                ? 'Connected' 
+                : webrtc.connectionState === 'connecting' 
+                ? 'Connecting...' 
+                : webrtc.connectionState === 'reconnecting' 
+                ? 'Reconnecting...' 
+                : 'Disconnected'}
             </span>
           </div>
 
@@ -618,11 +941,12 @@ export default function InterviewRoomPage() {
       {/* Main Room 3-Column Split View */}
       <div style={{ 
         display: 'grid', 
-        gridTemplateColumns: '380px 1fr 340px', 
+        gridTemplateColumns: `${questionPanelWidth}px 5px 1fr 340px`, 
         flex: 1, 
-        overflow: 'hidden' 
+        overflow: 'hidden',
+        userSelect: isResizing ? 'none' : 'auto',
       }}>
-        {/* COLUMN 1 (LEFT): Question / Problem System */}
+        {/* COLUMN 1 (LEFT): LeetCode-Style Question Panel */}
         <div style={{ 
           display: 'flex', 
           flexDirection: 'column', 
@@ -630,217 +954,33 @@ export default function InterviewRoomPage() {
           background: '#0d1321', 
           overflow: 'hidden' 
         }}>
-          {/* Question Selector Tabs */}
-          <div style={{ 
-            padding: '0.65rem 1rem', 
-            background: '#111827', 
-            borderBottom: '1px solid var(--border-subtle)',
+          <LeetCodeQuestionPanel
+            questions={questions}
+            activeQuestion={activeQuestion}
+            onSelectQuestion={handleSwitchQuestion}
+            onAddQuestion={() => setShowQuestionBankModal(true)}
+            canAddQuestion={userRole === 'interviewer'}
+            role={userRole}
+            isSynced={true}
+          />
+        </div>
+
+        {/* DRAGGABLE VERTICAL DIVIDER (PART 7) */}
+        <div
+          onMouseDown={handleMouseDownResize}
+          title="Drag to resize Question Panel and Editor"
+          style={{
+            width: '5px',
+            cursor: 'col-resize',
+            background: isResizing ? '#6366f1' : 'rgba(255, 255, 255, 0.08)',
+            zIndex: 10,
+            transition: isResizing ? 'none' : 'background 0.2s',
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '0.5rem',
-            overflowX: 'auto'
-          }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', overflowX: 'auto', flex: 1 }}>
-              {questions.map((q, idx) => {
-                const isSelected = (q.question_id && q.question_id === activeQuestionId) || q.id === activeQuestionId;
-                return (
-                  <button
-                    key={q.id || idx}
-                    onClick={() => handleSwitchQuestion(q)}
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.35rem',
-                      padding: '0.3rem 0.65rem',
-                      borderRadius: 'var(--radius-sm)',
-                      fontSize: '0.8rem',
-                      fontWeight: 600,
-                      cursor: 'pointer',
-                      border: isSelected ? '1px solid var(--accent-primary)' : '1px solid transparent',
-                      background: isSelected ? 'rgba(99, 102, 241, 0.15)' : 'rgba(255,255,255,0.03)',
-                      color: isSelected ? 'var(--accent-primary)' : 'var(--text-secondary)',
-                      whiteSpace: 'nowrap'
-                    }}
-                    title={q.title}
-                  >
-                    <span>Q{idx + 1}</span>
-                    <span style={{ maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {q.title}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-
-            {userRole === 'interviewer' && (
-              <button
-                onClick={() => setShowQuestionBankModal(true)}
-                className="btn btn-outline btn-sm"
-                style={{ 
-                  padding: '0.25rem 0.5rem', 
-                  fontSize: '0.75rem', 
-                  display: 'flex', 
-                  alignItems: 'center', 
-                  gap: '0.25rem',
-                  whiteSpace: 'nowrap',
-                  flexShrink: 0
-                }}
-                title="Add another question to this interview"
-              >
-                <Plus size={13} />
-                <span>Add</span>
-              </button>
-            )}
-          </div>
-
-          {/* Problem Statement Content (Scrollable) */}
-          <div style={{ flex: 1, overflowY: 'auto', padding: '1.25rem' }}>
-            {activeQuestion ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-                {/* Title & Metadata Badges */}
-                <div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
-                    <span style={{
-                      fontSize: '0.75rem',
-                      fontWeight: 700,
-                      padding: '0.2rem 0.55rem',
-                      borderRadius: 9999,
-                      background: `${getDifficultyColor(activeQuestion.difficulty)}20`,
-                      color: getDifficultyColor(activeQuestion.difficulty),
-                      border: `1px solid ${getDifficultyColor(activeQuestion.difficulty)}40`
-                    }}>
-                      {activeQuestion.difficulty}
-                    </span>
-                    <span className="badge badge-secondary" style={{ fontSize: '0.75rem' }}>
-                      {activeQuestion.topic}
-                    </span>
-                    {userRole === 'interviewer' && (
-                      <span style={{ fontSize: '0.7rem', color: '#10b981', display: 'flex', alignItems: 'center', gap: '0.2rem' }}>
-                        <Check size={12} /> Sync Active
-                      </span>
-                    )}
-                  </div>
-
-                  <h2 style={{ fontSize: '1.25rem', color: '#f9fafb', fontWeight: 700, lineHeight: 1.3 }}>
-                    {activeQuestion.title}
-                  </h2>
-                </div>
-
-                {/* Description */}
-                <div>
-                  <div style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: '0.4rem', fontWeight: 600 }}>
-                    Description
-                  </div>
-                  <div style={{ 
-                    fontSize: '0.875rem', 
-                    color: '#cbd5e1', 
-                    lineHeight: 1.6, 
-                    whiteSpace: 'pre-wrap' 
-                  }}>
-                    {activeQuestion.description}
-                  </div>
-                </div>
-
-                {/* Input / Output Format */}
-                {(activeQuestion.input_description || activeQuestion.output_description) && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                    {activeQuestion.input_description && (
-                      <div>
-                        <div style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: '0.25rem', fontWeight: 600 }}>
-                          Input Format
-                        </div>
-                        <div style={{ fontSize: '0.85rem', color: '#94a3b8', lineHeight: 1.5, background: 'rgba(255,255,255,0.02)', padding: '0.5rem 0.75rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
-                          {activeQuestion.input_description}
-                        </div>
-                      </div>
-                    )}
-                    {activeQuestion.output_description && (
-                      <div>
-                        <div style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: '0.25rem', fontWeight: 600 }}>
-                          Output Format
-                        </div>
-                        <div style={{ fontSize: '0.85rem', color: '#94a3b8', lineHeight: 1.5, background: 'rgba(255,255,255,0.02)', padding: '0.5rem 0.75rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
-                          {activeQuestion.output_description}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Examples */}
-                {activeQuestion.examples && activeQuestion.examples.length > 0 && (
-                  <div>
-                    <div style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: '0.6rem', fontWeight: 600 }}>
-                      Examples
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                      {activeQuestion.examples.map((ex, exIdx) => (
-                        <div 
-                          key={exIdx} 
-                          style={{ 
-                            background: '#111827', 
-                            border: '1px solid var(--border-subtle)', 
-                            borderRadius: 'var(--radius-sm)', 
-                            padding: '0.75rem',
-                            fontSize: '0.85rem'
-                          }}
-                        >
-                          <div style={{ fontWeight: 600, color: 'var(--accent-primary)', marginBottom: '0.35rem', fontSize: '0.8rem' }}>
-                            Example {exIdx + 1}
-                          </div>
-                          <div style={{ marginBottom: '0.35rem' }}>
-                            <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Input: </span>
-                            <pre style={{ margin: '0.2rem 0', background: '#090d16', padding: '0.4rem 0.6rem', borderRadius: 4, color: '#e2e8f0', fontSize: '0.8rem', overflowX: 'auto' }}>
-                              {ex.input}
-                            </pre>
-                          </div>
-                          <div style={{ marginBottom: '0.35rem' }}>
-                            <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>Output: </span>
-                            <pre style={{ margin: '0.2rem 0', background: '#090d16', padding: '0.4rem 0.6rem', borderRadius: 4, color: '#10b981', fontSize: '0.8rem', overflowX: 'auto' }}>
-                              {ex.output}
-                            </pre>
-                          </div>
-                          {ex.explanation && (
-                            <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.3rem' }}>
-                              <span style={{ color: 'var(--text-muted)' }}>Explanation: </span>
-                              {ex.explanation}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Constraints */}
-                {activeQuestion.constraints && (
-                  <div>
-                    <div style={{ fontSize: '0.8rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', marginBottom: '0.4rem', fontWeight: 600 }}>
-                      Constraints
-                    </div>
-                    <div style={{ 
-                      background: 'rgba(255,255,255,0.02)', 
-                      border: '1px solid var(--border-subtle)', 
-                      borderRadius: 'var(--radius-sm)', 
-                      padding: '0.65rem 0.75rem', 
-                      fontSize: '0.8rem', 
-                      fontFamily: 'var(--font-mono)', 
-                      color: '#94a3b8',
-                      whiteSpace: 'pre-wrap'
-                    }}>
-                      {activeQuestion.constraints}
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--text-muted)' }}>
-                <BookOpen size={32} style={{ margin: '0 auto 0.75rem auto', opacity: 0.4 }} />
-                <p>No problem selected.</p>
-              </div>
-            )}
-          </div>
+            justifyContent: 'center',
+          }}
+        >
+          <div style={{ width: '2px', height: '28px', background: isResizing ? '#a5b4fc' : 'rgba(255, 255, 255, 0.2)', borderRadius: '1px' }} />
         </div>
 
         {/* COLUMN 2 (CENTER): Shared Live IDE / Code Editor */}
@@ -848,6 +988,7 @@ export default function InterviewRoomPage() {
           <CollaborativeCodeEditor
             code={collaborativeCode.code}
             language={collaborativeCode.language}
+            availableLanguages={availableLanguages}
             syncStatus={collaborativeCode.syncStatus}
             onCodeChange={collaborativeCode.setCode}
             onLanguageChange={collaborativeCode.setLanguage}
@@ -861,109 +1002,63 @@ export default function InterviewRoomPage() {
 
         {/* COLUMN 3 (RIGHT): Video Panels, Side Tabs, and Session Controls */}
         <div style={{ display: 'flex', flexDirection: 'column', background: '#111827', overflowY: 'auto' }}>
+          {/* Permission warning banner in active room if denied */}
+          {webrtc.permissionStatus === 'denied' && (
+            <div style={{
+              background: 'rgba(239, 68, 68, 0.15)',
+              borderBottom: '1px solid rgba(239, 68, 68, 0.3)',
+              padding: '0.6rem 0.75rem',
+              fontSize: '0.75rem',
+              color: '#fca5a5',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '0.5rem',
+            }}>
+              <span>Camera/mic access denied.</span>
+              <button 
+                onClick={webrtc.requestMediaPermissions}
+                className="btn btn-xs btn-outline"
+                style={{ borderColor: 'rgba(239, 68, 68, 0.5)', color: '#fff', fontSize: '0.7rem' }}
+              >
+                Enable
+              </button>
+            </div>
+          )}
+
           {/* Remote Video Tile (Peer) */}
           <div style={{ padding: '0.75rem', borderBottom: '1px solid var(--border-subtle)' }}>
-            <div style={{
-              height: '160px',
-              background: '#1f2937',
-              borderRadius: 'var(--radius-md)',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              position: 'relative',
-              overflow: 'hidden',
-              border: '1px solid rgba(255, 255, 255, 0.08)'
-            }}>
-              {webrtc.remoteStream && webrtc.peerMediaState.camera ? (
-                <video
-                  ref={remoteVideoRef}
-                  autoPlay
-                  playsInline
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                />
-              ) : (
-                <div style={{ textAlign: 'center', color: 'var(--text-muted)' }}>
-                  <Video size={32} style={{ margin: '0 auto 0.35rem auto' }} />
-                  <div style={{ fontWeight: 600, fontSize: '0.85rem', color: 'var(--text-primary)' }}>
-                    {userRole === 'interviewer' ? interview.candidate_name : interview.interviewer_name}
-                  </div>
-                  <div style={{ fontSize: '0.75rem', marginTop: '0.2rem' }}>
-                    {webrtc.connectionState === 'connected' ? 'Peer camera is off' : 'Waiting for peer to connect...'}
-                  </div>
-                </div>
-              )}
-
-              {/* Role badge */}
-              <span className="badge badge-secondary" style={{ position: 'absolute', bottom: 6, left: 6, fontSize: '0.65rem' }}>
-                {userRole === 'interviewer' ? 'Candidate' : 'Interviewer'}
-              </span>
-
-              {/* Remote mic & screen share badges */}
-              <div style={{ position: 'absolute', bottom: 6, right: 6, display: 'flex', gap: '0.35rem' }}>
-                {webrtc.peerMediaState.screenSharing && (
-                  <span className="badge badge-primary" style={{ fontSize: '0.65rem' }}>
-                    Screen Active
-                  </span>
-                )}
-                {!webrtc.peerMediaState.mic && (
-                  <span className="badge badge-danger" style={{ fontSize: '0.65rem' }}>
-                    Muted
-                  </span>
-                )}
-              </div>
+            <div style={{ marginBottom: '0.4rem', fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              {userRole === 'interviewer' ? 'Candidate Camera' : 'Interviewer Camera'}
             </div>
+            <VideoTile
+              stream={webrtc.remoteStream}
+              isLocal={false}
+              isCameraOn={webrtc.peerMediaState.camera}
+              isMicOn={webrtc.peerMediaState.mic}
+              isScreenSharing={webrtc.peerMediaState.screenSharing}
+              participantName={userRole === 'interviewer' ? (interview.candidate_name || 'Candidate') : (interview.interviewer_name || 'Interviewer')}
+              role={userRole === 'interviewer' ? 'candidate' : 'interviewer'}
+              height="160px"
+              waitingMessage={userRole === 'interviewer' ? 'Waiting for candidate...' : 'Waiting for interviewer...'}
+            />
           </div>
 
           {/* Local Video Tile (Self) */}
           <div style={{ padding: '0.75rem', borderBottom: '1px solid var(--border-subtle)' }}>
-            <div style={{
-              height: '140px',
-              background: '#1a2234',
-              borderRadius: 'var(--radius-md)',
-              display: 'flex',
-              flexDirection: 'column',
-              alignItems: 'center',
-              justifyContent: 'center',
-              position: 'relative',
-              overflow: 'hidden',
-              border: '1px solid rgba(99, 102, 241, 0.3)'
-            }}>
-              {webrtc.isCameraOn ? (
-                <video
-                  ref={localVideoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  style={{ width: '100%', height: '100%', objectFit: 'cover' }}
-                />
-              ) : (
-                <>
-                  <VideoOff size={28} color="#6b7280" />
-                  <div style={{ marginTop: '0.35rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                    Your Camera is Off
-                  </div>
-                </>
-              )}
-
-              <span className="badge badge-primary" style={{ position: 'absolute', bottom: 6, left: 6, fontSize: '0.65rem' }}>
-                You ({userRole})
-              </span>
-
-              {/* Self Mic Indicator */}
-              <div style={{ position: 'absolute', bottom: 6, right: 6 }}>
-                {!webrtc.isMicOn && (
-                  <span className="badge badge-danger" style={{ fontSize: '0.65rem' }}>
-                    Muted
-                  </span>
-                )}
-                {webrtc.isScreenSharing && (
-                  <span className="badge badge-primary" style={{ fontSize: '0.65rem' }}>
-                    Sharing
-                  </span>
-                )}
-              </div>
+            <div style={{ marginBottom: '0.4rem', fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              Your Camera
             </div>
+            <VideoTile
+              stream={webrtc.localStream}
+              isLocal={true}
+              isCameraOn={webrtc.isCameraOn}
+              isMicOn={webrtc.isMicOn}
+              isScreenSharing={webrtc.isScreenSharing}
+              participantName="You"
+              role={userRole}
+              height="140px"
+            />
           </div>
 
           {/* Media Controls Bar */}
@@ -1038,11 +1133,175 @@ export default function InterviewRoomPage() {
               <FileText size={13} />
               <span>Notes</span>
             </button>
+
+            <button
+              onClick={() => setSideTab('candidate')}
+              style={{
+                flex: 1,
+                padding: '0.5rem',
+                fontSize: '0.75rem',
+                fontWeight: 600,
+                background: sideTab === 'candidate' ? '#111827' : 'transparent',
+                color: sideTab === 'candidate' ? 'var(--accent-primary)' : 'var(--text-muted)',
+                border: 'none',
+                borderBottom: sideTab === 'candidate' ? '2px solid var(--accent-primary)' : '2px solid transparent',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '0.35rem'
+              }}
+            >
+              <User size={13} />
+              <span>Candidate</span>
+            </button>
           </div>
 
           {/* Side Tab Content */}
           <div style={{ flex: 1, overflowY: 'auto', padding: '0.75rem' }}>
-            {sideTab === 'notes' ? (
+            {sideTab === 'candidate' ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                <div style={{ background: '#0a0e17', borderRadius: 'var(--radius-sm)', padding: '0.85rem', border: '1px solid var(--border-subtle)' }}>
+                  <div style={{ fontWeight: 700, fontSize: '0.95rem', color: '#f8fafc' }}>
+                    {candidateProfile?.full_name || interview.candidate_name}
+                  </div>
+                  {candidateProfile?.headline && (
+                    <div style={{ fontSize: '0.78rem', color: 'var(--accent-secondary)', marginTop: '0.2rem' }}>
+                      {candidateProfile.headline}
+                    </div>
+                  )}
+                  {candidateProfile?.bio && (
+                    <p style={{ fontSize: '0.75rem', color: '#94a3b8', margin: '0.4rem 0 0 0', lineHeight: 1.4 }}>
+                      "{candidateProfile.bio}"
+                    </p>
+                  )}
+                </div>
+
+                {/* Resume Section (Phase 17) */}
+                <div style={{ background: '#0a0e17', borderRadius: 'var(--radius-sm)', padding: '0.85rem', border: '1px solid var(--border-subtle)' }}>
+                  <div style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', fontWeight: 600, marginBottom: '0.4rem' }}>
+                    Resume Document
+                  </div>
+                  {candidateResume ? (
+                    <div>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.5rem' }}>
+                        <FileText size={15} color="#818cf8" />
+                        <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#e2e8f0' }}>
+                          {candidateResume.fileName}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setShowResumeModal(true)}
+                        className="btn btn-primary btn-sm"
+                        style={{ width: '100%', fontSize: '0.75rem', padding: '0.3rem 0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem' }}
+                      >
+                        <Eye size={13} />
+                        <span>View Resume</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                      No resume uploaded by candidate.
+                    </div>
+                  )}
+                </div>
+
+                {/* Coding & Competitive Handles */}
+                <div style={{ background: '#0a0e17', borderRadius: 'var(--radius-sm)', padding: '0.85rem', border: '1px solid var(--border-subtle)' }}>
+                  <div style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', fontWeight: 600, marginBottom: '0.5rem' }}>
+                    Coding Profiles
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', fontSize: '0.75rem' }}>
+                    {candidateProfile?.leetcode && (
+                      <a
+                        href={candidateProfile.leetcode.startsWith('http') ? candidateProfile.leetcode : `https://leetcode.com/${candidateProfile.leetcode}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '0.3rem', textDecoration: 'none' }}
+                      >
+                        <Code2 size={12} />
+                        <span>LeetCode: {candidateProfile.leetcode.split('/').pop()}</span>
+                        <ExternalLink size={10} />
+                      </a>
+                    )}
+                    {candidateProfile?.codeforces && (
+                      <a
+                        href={candidateProfile.codeforces.startsWith('http') ? candidateProfile.codeforces : `https://codeforces.com/profile/${candidateProfile.codeforces}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ color: '#3b82f6', display: 'flex', alignItems: 'center', gap: '0.3rem', textDecoration: 'none' }}
+                      >
+                        <Code2 size={12} />
+                        <span>Codeforces: {candidateProfile.codeforces}</span>
+                        <ExternalLink size={10} />
+                      </a>
+                    )}
+                    {candidateProfile?.codechef && (
+                      <a
+                        href={candidateProfile.codechef.startsWith('http') ? candidateProfile.codechef : `https://www.codechef.com/users/${candidateProfile.codechef}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ color: '#a855f7', display: 'flex', alignItems: 'center', gap: '0.3rem', textDecoration: 'none' }}
+                      >
+                        <Code2 size={12} />
+                        <span>CodeChef: {candidateProfile.codechef}</span>
+                        <ExternalLink size={10} />
+                      </a>
+                    )}
+                    {candidateProfile?.github && (
+                      <a
+                        href={candidateProfile.github.startsWith('http') ? candidateProfile.github : `https://${candidateProfile.github}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ color: '#94a3b8', display: 'flex', alignItems: 'center', gap: '0.3rem', textDecoration: 'none' }}
+                      >
+                        <span>GitHub Profile</span>
+                        <ExternalLink size={10} />
+                      </a>
+                    )}
+                    {candidateProfile?.linkedin && (
+                      <a
+                        href={candidateProfile.linkedin.startsWith('http') ? candidateProfile.linkedin : `https://${candidateProfile.linkedin}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ color: '#38bdf8', display: 'flex', alignItems: 'center', gap: '0.3rem', textDecoration: 'none' }}
+                      >
+                        <span>LinkedIn Profile</span>
+                        <ExternalLink size={10} />
+                      </a>
+                    )}
+                  </div>
+                </div>
+
+                {/* Skills */}
+                {candidateProfile?.skills && candidateProfile.skills.length > 0 && (
+                  <div style={{ background: '#0a0e17', borderRadius: 'var(--radius-sm)', padding: '0.85rem', border: '1px solid var(--border-subtle)' }}>
+                    <div style={{ fontSize: '0.75rem', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-muted)', fontWeight: 600, marginBottom: '0.4rem' }}>
+                      Verified Skills
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
+                      {candidateProfile.skills.map((s, idx) => (
+                        <span key={idx} className="badge badge-secondary" style={{ fontSize: '0.68rem', padding: '1px 5px' }}>
+                          {s}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <a
+                  href={`/candidates/${candidateProfile?.username || interview.candidate_id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="btn btn-outline btn-sm"
+                  style={{ width: '100%', fontSize: '0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem' }}
+                >
+                  <span>Open Full Public Profile</span>
+                  <ExternalLink size={11} />
+                </a>
+              </div>
+            ) : sideTab === 'notes' ? (
               <textarea
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
@@ -1156,6 +1415,213 @@ export default function InterviewRoomPage() {
           }}
         />
       )}
+
+      {/* Candidate Resume Preview Modal (Phase 17) */}
+      {showResumeModal && candidateResume && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1200,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: 'rgba(0, 0, 0, 0.8)',
+            backdropFilter: 'blur(6px)',
+            padding: '1.5rem',
+          }}
+          onClick={() => setShowResumeModal(false)}
+        >
+          <div
+            style={{
+              backgroundColor: '#0f172a',
+              border: '1px solid rgba(99, 102, 241, 0.3)',
+              borderRadius: '0.75rem',
+              maxWidth: '680px',
+              width: '100%',
+              maxHeight: '80vh',
+              display: 'flex',
+              flexDirection: 'column',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.6)',
+              overflow: 'hidden',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              style={{
+                padding: '1.25rem 1.5rem',
+                borderBottom: '1px solid var(--border-subtle)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <FileText size={20} color="#818cf8" />
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '1.1rem', color: '#f8fafc' }}>
+                    {candidateProfile?.full_name || interview.candidate_name}'s Resume
+                  </h3>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    {candidateResume.fileName} • Privacy Protected
+                  </span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowResumeModal(false)}
+                className="btn btn-outline btn-sm"
+                style={{ padding: '0.25rem 0.5rem' }}
+              >
+                Close
+              </button>
+            </div>
+
+            <div style={{ padding: '1.25rem 1.5rem', overflowY: 'auto', flex: 1 }}>
+              {candidateResume.rawText ? (
+                <pre
+                  style={{
+                    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+                    padding: '1rem',
+                    borderRadius: '0.5rem',
+                    fontSize: '0.85rem',
+                    color: '#cbd5e1',
+                    lineHeight: '1.6',
+                    fontFamily: 'var(--font-sans)',
+                    whiteSpace: 'pre-wrap',
+                    margin: 0,
+                  }}
+                >
+                  {candidateResume.rawText}
+                </pre>
+              ) : (
+                <div style={{ textAlign: 'center', padding: '2rem 1rem', color: 'var(--text-secondary)' }}>
+                  <FileText size={36} color="#64748b" style={{ margin: '0 auto 0.5rem auto' }} />
+                  <p>Document file: {candidateResume.fileName}</p>
+                  {candidateResume.dataUrl && (
+                    <a
+                      href={candidateResume.dataUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="btn btn-primary btn-sm"
+                      style={{ marginTop: '1rem', display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
+                    >
+                      <ExternalLink size={14} />
+                      <span>Open Document in New Tab</span>
+                    </a>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
+
+/**
+ * InterviewRoomPage: Gatekeeper component enforcing participant authorization.
+ * STRICT SECURITY: Does NOT mount WebRTC, camera, microphone, Monaco editor,
+ * or collaborative channels until participant authorization succeeds.
+ */
+export default function InterviewRoomPage() {
+  const { id: interviewId } = useParams();
+  const { user, profile } = useAuth();
+  const navigate = useNavigate();
+
+  const [interview, setInterview] = useState(null);
+  const [userRole, setUserRole] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function verifyAndLoad() {
+      if (!interviewId || !user?.id) return;
+      try {
+        const res = await getInterviewById(interviewId, user.id);
+        if (!isMounted) return;
+
+        if (!res.isAuthorized || !res.interview) {
+          setError(res.error || 'You are not a participant in this interview.');
+          setLoading(false);
+          return;
+        }
+
+        if (res.interview.status === 'completed') {
+          if (res.userRoleInInterview === 'interviewer' && !res.interview.score) {
+            navigate(`/interview/evaluate/${interviewId}`, { replace: true });
+          } else {
+            navigate(`/interview/results/${interviewId}`, { replace: true });
+          }
+          return;
+        }
+
+        if (res.interview.status !== 'waiting' && res.interview.status !== 'active' && res.interview.status !== 'scheduled') {
+          setError('This interview is not currently active, waiting, or scheduled.');
+          setLoading(false);
+          return;
+        }
+
+        setInterview(res.interview);
+        setUserRole(res.userRoleInInterview);
+        setLoading(false);
+      } catch (err) {
+        if (isMounted) {
+          setError(err.message || 'Failed to authorize interview session.');
+          setLoading(false);
+        }
+      }
+    }
+
+    verifyAndLoad();
+    return () => {
+      isMounted = false;
+    };
+  }, [interviewId, user?.id, navigate]);
+
+  if (loading) {
+    return (
+      <div className="container" style={{ padding: '6rem 1.5rem', textAlign: 'center' }}>
+        <RotateCw size={36} style={{ animation: 'spin 1s linear infinite', margin: '0 auto 1rem auto', color: 'var(--accent-primary)' }} />
+        <h2>Verifying Interview Authorization...</h2>
+        <p style={{ color: 'var(--text-secondary)' }}>Validating participant security and credentials</p>
+      </div>
+    );
+  }
+
+  if (error || !interview) {
+    const dashboardPath = profile?.role === 'interviewer' ? '/interviewer/dashboard' : '/candidate/dashboard';
+    return (
+      <div className="container" style={{ padding: '5rem 1.5rem', maxWidth: '540px' }}>
+        <div className="card" style={{ textAlign: 'center', padding: '3rem 2rem', border: '1px solid rgba(239, 68, 68, 0.3)', background: 'rgba(239, 68, 68, 0.04)' }}>
+          <ShieldAlert size={52} color="#ef4444" style={{ margin: '0 auto 1.25rem auto' }} />
+          <h2 style={{ fontSize: '1.6rem', marginBottom: '0.75rem', color: '#f87171' }}>Access Denied</h2>
+          <p style={{ color: '#f1f5f9', marginBottom: '0.5rem', fontSize: '1.05rem', fontWeight: 600 }}>
+            {error || 'You are not a participant in this interview.'}
+          </p>
+          <p style={{ color: 'var(--text-secondary)', marginBottom: '1.75rem', fontSize: '0.875rem', lineHeight: 1.5 }}>
+            This interview room is strictly private to the assigned interviewer and candidate.
+          </p>
+          <Link to={dashboardPath} className="btn btn-primary" style={{ width: '100%', maxWidth: '240px', margin: '0 auto' }}>
+            Return to Dashboard
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <AuthorizedInterviewRoom
+      interviewId={interviewId}
+      initialInterview={interview}
+      initialUserRole={userRole}
+      user={user}
+      profile={profile}
+    />
+  );
+}
+

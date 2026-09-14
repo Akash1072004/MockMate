@@ -134,8 +134,8 @@ export async function updateAvailability(interviewerId, isAvailable) {
   return data;
 }
 
-// Accept an interview request and generate an associated interview session atomically via database RPC
-export async function acceptInterviewRequest({ requestId }) {
+// Accept an interview request and optionally apply scheduled date/time & duration
+export async function acceptInterviewRequest({ requestId, scheduledAt = null, duration = null }) {
   const targetRequestId = requestId || (typeof arguments[0] === 'string' ? arguments[0] : null);
   if (!supabase || !targetRequestId) {
     throw new Error('Missing request ID to accept interview request');
@@ -155,10 +155,59 @@ export async function acceptInterviewRequest({ requestId }) {
     throw new Error('Database failed to accept interview request.');
   }
 
+  let finalInterview = rpcData.interview;
+
+  // If scheduling date/time or custom duration is configured, update interview session
+  if (rpcData.interview?.id && (scheduledAt || duration)) {
+    try {
+      const updateFields = {
+        updated_at: new Date().toISOString(),
+      };
+      if (duration) updateFields.duration = Number(duration);
+      if (scheduledAt) updateFields.start_time = scheduledAt;
+
+      const { data: updated, error: updateErr } = await supabase
+        .from('interviews')
+        .update(updateFields)
+        .eq('id', rpcData.interview.id)
+        .select()
+        .single();
+
+      if (!updateErr && updated) {
+        finalInterview = updated;
+      }
+    } catch (schedErr) {
+      console.warn('[interviewerService] Non-critical error applying schedule:', schedErr);
+    }
+  }
+
   return {
     request: rpcData.request,
-    interview: rpcData.interview,
+    interview: finalInterview,
   };
+}
+
+// Update schedule for an existing interview session
+export async function scheduleInterview(interviewId, { scheduledAt, duration }) {
+  if (!supabase || !interviewId) throw new Error('Missing interview ID');
+  const updateFields = {
+    updated_at: new Date().toISOString(),
+  };
+  if (duration) updateFields.duration = Number(duration);
+  if (scheduledAt) updateFields.start_time = scheduledAt;
+
+  const { data, error } = await supabase
+    .from('interviews')
+    .update(updateFields)
+    .eq('id', interviewId)
+    .select()
+    .single();
+
+  if (error) {
+    console.error('[interviewerService] scheduleInterview error:', error);
+    throw error;
+  }
+  return data;
 }
 
 // Decline an interview request atomically via database RPC

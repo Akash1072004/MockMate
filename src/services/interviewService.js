@@ -1,4 +1,5 @@
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { getApiBaseUrl } from '../utils/apiConfig';
 
 /**
  * Service for interview sessions, join codes, and lifecycle states.
@@ -34,7 +35,7 @@ export async function getInterviewById(interviewId, userId) {
     return {
       interview: null,
       isAuthorized: false,
-      error: 'Unauthorized: You are not a registered participant in this interview session.',
+      error: 'You are not a participant in this interview.',
     };
   }
 
@@ -160,4 +161,107 @@ export async function updateInterviewCode(interviewId, code, language) {
   }
 
   return data;
+}
+
+/**
+ * Fetch genuinely ACTIVE live sessions across the platform.
+ * Read-only metadata: interviewer name, candidate name, start time, duration, status.
+ * Excludes private code and evaluation data.
+ */
+export async function fetchLiveSessions() {
+  // 1. Try backend server endpoint (privileged service role query)
+  try {
+    const apiBase = getApiBaseUrl();
+    const res = await fetch(`${apiBase}/interviews/live-sessions`);
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.liveSessions)) {
+        return data.liveSessions;
+      }
+    }
+  } catch (err) {
+    console.warn('[interviewService] Backend live-sessions fetch failed, trying Supabase fallback:', err.message);
+  }
+
+  // 2. Direct Supabase RPC or query fallback
+  if (supabase) {
+    try {
+      // First try the secure helper RPC function
+      const { data: rpcData, error: rpcError } = await supabase.rpc('get_active_live_sessions');
+      if (!rpcError && Array.isArray(rpcData)) {
+        return rpcData.map(i => ({
+          id: i.id,
+          interviewerId: i.interviewer_id,
+          interviewerName: i.interviewer_name || 'Interviewer',
+          candidateId: i.candidate_id,
+          candidateName: i.candidate_name || 'Candidate',
+          interviewType: i.interview_type || 'Technical',
+          difficulty: i.difficulty || 'Medium',
+          startTime: i.start_time,
+          duration: i.duration || 60,
+          status: 'IN SESSION'
+        }));
+      }
+
+      // Fallback to table SELECT via the newly created metadata RLS policy
+      const { data, error } = await supabase
+        .from('interviews')
+        .select('id, interviewer_id, interviewer_name, candidate_id, candidate_name, interview_type, difficulty, start_time, duration, status')
+        .eq('status', 'active')
+        .order('start_time', { ascending: false });
+
+      if (!error && data) {
+        return data.map(i => ({
+          id: i.id,
+          interviewerId: i.interviewer_id,
+          interviewerName: i.interviewer_name || 'Interviewer',
+          candidateId: i.candidate_id,
+          candidateName: i.candidate_name || 'Candidate',
+          interviewType: i.interview_type || 'Technical',
+          difficulty: i.difficulty || 'Medium',
+          startTime: i.start_time,
+          duration: i.duration || 60,
+          status: 'IN SESSION'
+        }));
+      }
+    } catch (dbErr) {
+      console.error('[interviewService] Supabase fallback live sessions error:', dbErr);
+    }
+  }
+
+  return [];
+}
+
+/**
+ * Subscribes to Supabase Realtime changes for active live sessions.
+ * Triggers callback immediately when an interview becomes active or completes.
+ */
+export function subscribeToLiveSessions(onUpdate) {
+  if (!supabase || typeof onUpdate !== 'function') return () => {};
+
+  const channel = supabase
+    .channel('public_live_sessions_realtime')
+    .on(
+      'postgres_changes',
+      {
+        event: '*',
+        schema: 'public',
+        table: 'interviews',
+      },
+      () => {
+        // Re-fetch latest live sessions when any interview status changes
+        fetchLiveSessions().then(sessions => onUpdate(sessions));
+      }
+    )
+    .subscribe();
+
+  // Periodic polling fallback (every 10s)
+  const pollInterval = setInterval(() => {
+    fetchLiveSessions().then(sessions => onUpdate(sessions));
+  }, 10000);
+
+  return () => {
+    if (channel) supabase.removeChannel(channel);
+    clearInterval(pollInterval);
+  };
 }

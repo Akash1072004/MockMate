@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { getInterviewEvaluation } from '../services/evaluationService';
+import { supabase } from '../lib/supabase';
 import {
   Award,
   CheckCircle2,
@@ -30,27 +31,63 @@ export default function InterviewResultsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    async function loadReport() {
-      if (!interviewId) return;
-      setLoading(true);
-      setError('');
-      try {
-        const res = await getInterviewEvaluation(interviewId);
-        if (res.error) {
-          setError(res.error);
-        } else {
-          setReport(res);
-        }
-      } catch (err) {
-        console.error('[InterviewResultsPage] Load error:', err);
-        setError(err.message || 'Failed to generate interview report.');
-      } finally {
-        setLoading(false);
+  const loadReport = async () => {
+    if (!interviewId) return;
+    setLoading(true);
+    setError('');
+    try {
+      const res = await getInterviewEvaluation(interviewId);
+      if (res.error) {
+        setError(res.error);
+      } else {
+        setReport(res);
       }
+    } catch (err) {
+      console.error('[InterviewResultsPage] Load error:', err);
+      setError(err.message || 'Failed to load interview report.');
+    } finally {
+      setLoading(false);
     }
+  };
 
+  useEffect(() => {
     loadReport();
+  }, [interviewId]);
+
+  // Realtime subscription: update evaluation immediately when interviewer submits
+  useEffect(() => {
+    if (!interviewId || !supabase) return;
+
+    const channel = supabase
+      .channel(`interview_results_sync_${interviewId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'interviews',
+          filter: `id=eq.${interviewId}`,
+        },
+        (payload) => {
+          if (payload.new?.evaluation) {
+            setReport((prev) => {
+              if (!prev) return prev;
+              return {
+                ...prev,
+                interview: { ...prev.interview, ...payload.new },
+                evaluation: payload.new.evaluation,
+                score: payload.new.score,
+                isPending: false,
+              };
+            });
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [interviewId]);
 
   if (loading) {
@@ -77,10 +114,86 @@ export default function InterviewResultsPage() {
           }}>
             <Sparkles size={28} color="#818cf8" style={{ animation: 'pulse 1.5s infinite' }} />
           </div>
-          <h2 style={{ fontSize: '1.4rem', marginBottom: '0.6rem' }}>Synthesizing Evaluation</h2>
+          <h2 style={{ fontSize: '1.4rem', marginBottom: '0.6rem' }}>Loading Interview Evaluation</h2>
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', lineHeight: '1.6' }}>
-            Gemini AI is analyzing your code submissions, architectural trade-offs, and communication clarity to generate your comprehensive debrief...
+            Fetching verified evaluation report and candidate debrief from database...
           </p>
+        </div>
+      </div>
+    );
+  }
+
+  const isInterviewer = user?.id === report?.interview?.interviewer_id;
+  const dashboardPath = isInterviewer ? '/interviewer/dashboard' : '/candidate/dashboard';
+
+  // EVALUATION PENDING STATE: Interview completed, but interviewer has not submitted evaluation yet
+  if (report?.isPending || (!report?.evaluation && report?.interview?.status === 'completed')) {
+    return (
+      <div className="container" style={{ padding: '5rem 1.5rem', maxWidth: '640px' }}>
+        <div
+          className="card"
+          style={{
+            padding: '3rem 2.5rem',
+            textAlign: 'center',
+            background: '#111827',
+            border: '1px solid rgba(245, 158, 11, 0.3)',
+            borderRadius: 'var(--radius-lg)',
+            boxShadow: '0 8px 30px rgba(0,0,0,0.3)',
+          }}
+        >
+          <div
+            style={{
+              width: '64px',
+              height: '64px',
+              borderRadius: '50%',
+              background: 'rgba(245, 158, 11, 0.15)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              margin: '0 auto 1.5rem auto',
+              border: '1px solid rgba(245, 158, 11, 0.3)',
+            }}
+          >
+            <Clock size={32} color="#f59e0b" />
+          </div>
+
+          <div className="badge badge-success" style={{ margin: '0 auto 1rem auto' }}>
+            Interview Completed
+          </div>
+
+          <h2 style={{ fontSize: '1.6rem', marginBottom: '0.5rem', color: '#f9fafb' }}>
+            Evaluation: <span style={{ color: '#f59e0b' }}>Pending</span>
+          </h2>
+
+          <p style={{ color: 'var(--text-secondary)', fontSize: '0.975rem', lineHeight: '1.6', marginBottom: '1.75rem' }}>
+            The interviewer has not submitted the final evaluation yet.
+          </p>
+
+          <div
+            style={{
+              background: 'rgba(0,0,0,0.25)',
+              borderRadius: 'var(--radius-md)',
+              padding: '1rem',
+              marginBottom: '2rem',
+              border: '1px solid rgba(255,255,255,0.06)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: '0.6rem',
+              fontSize: '0.85rem',
+              color: '#94a3b8',
+            }}
+          >
+            <Sparkles size={16} color="#818cf8" style={{ animation: 'pulse 1.5s infinite' }} />
+            <span>This page updates automatically in real-time when the interviewer submits the evaluation.</span>
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '0.75rem' }}>
+            <Link to={dashboardPath} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <ArrowLeft size={16} />
+              <span>Back to Past Interviews</span>
+            </Link>
+          </div>
         </div>
       </div>
     );
@@ -96,11 +209,11 @@ export default function InterviewResultsPage() {
             {error || 'The requested evaluation report could not be found or processed.'}
           </p>
           <div style={{ display: 'flex', justifyContent: 'center', gap: '0.75rem' }}>
-            <Link to="/candidate/dashboard" className="btn btn-outline">
+            <Link to={dashboardPath} className="btn btn-outline">
               <ArrowLeft size={16} />
               <span>Back to Dashboard</span>
             </Link>
-            <button onClick={() => window.location.reload()} className="btn btn-primary">
+            <button onClick={loadReport} className="btn btn-primary">
               <RotateCcw size={16} />
               <span>Retry</span>
             </button>
@@ -111,7 +224,13 @@ export default function InterviewResultsPage() {
   }
 
   const { interview, evaluation, questions = [], answers = [], submissions = [] } = report;
-  const overall = evaluation.overallScore ?? report.score ?? 8.0;
+  const isPeer = interview?.is_ai === false;
+
+  // Calculate overall score cleanly (scale out of 10)
+  const rawScore = evaluation.overallScore ?? report.score ?? interview?.score;
+  const overall = rawScore !== null && rawScore !== undefined 
+    ? (rawScore > 10 ? (rawScore / 10).toFixed(1) : Number(rawScore).toFixed(1)) 
+    : 'N/A';
 
   const getVerdictStyle = (v) => {
     switch (v) {
@@ -126,19 +245,57 @@ export default function InterviewResultsPage() {
     }
   };
 
-  const verdictStyle = getVerdictStyle(evaluation.verdict);
+  const verdictStyle = getVerdictStyle(evaluation.verdict || evaluation.recommendation);
 
-  // Map answers by question_id
-  const answerMap = new Map();
-  answers.forEach((a) => answerMap.set(a.question_id, a));
+  // Derive authentic problem resolution without fabricating Solved states
+  const getProblemResolution = (q) => {
+    const qSubs = (submissions || []).filter((s) => s.question_id === q.id || s.question_id === q.question_id);
+    const ans = (answers || []).find((a) => a.question_id === q.id || a.question_id === q.question_id);
+    const code = ans?.code_snapshot || (qSubs.length > 0 ? qSubs[qSubs.length - 1]?.code : null) || interview?.code || null;
+    const lang = (qSubs.length > 0 ? qSubs[qSubs.length - 1]?.language : null) || ans?.language || q.language || 'Python';
+
+    const passedSub = qSubs.find((s) => s.status === 'Accepted' || (s.total_tests > 0 && s.tests_passed === s.total_tests));
+
+    if (passedSub) {
+      return {
+        status: 'Solved',
+        color: '#10b981',
+        bg: 'rgba(16, 185, 129, 0.15)',
+        code,
+        language: lang,
+        result: `All ${passedSub.total_tests} test cases passed`,
+      };
+    }
+
+    if (qSubs.length > 0 || (code && code.trim().length > 25)) {
+      const lastSub = qSubs[qSubs.length - 1];
+      return {
+        status: 'Attempted',
+        color: '#f59e0b',
+        bg: 'rgba(245, 158, 11, 0.15)',
+        code,
+        language: lang,
+        result: lastSub ? `${lastSub.tests_passed || 0}/${lastSub.total_tests || 0} tests passed` : 'Solution attempted',
+      };
+    }
+
+    return {
+      status: 'Result unavailable',
+      color: '#94a3b8',
+      bg: 'rgba(148, 163, 184, 0.15)',
+      code: null,
+      language: lang,
+      result: 'No code submitted',
+    };
+  };
 
   return (
     <div className="container" style={{ padding: '2.5rem 1.5rem 5rem 1.5rem', maxWidth: '1080px' }}>
       {/* Top Header Navigation */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
-        <Link to="/candidate/dashboard" className="btn btn-outline btn-sm" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
+        <Link to={dashboardPath} className="btn btn-outline btn-sm" style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}>
           <ArrowLeft size={15} />
-          <span>Dashboard</span>
+          <span>Back to Dashboard</span>
         </Link>
 
         <div style={{ display: 'flex', gap: '0.75rem' }}>
@@ -150,18 +307,20 @@ export default function InterviewResultsPage() {
             <Printer size={15} />
             <span>Print Report</span>
           </button>
-          <Link
-            to="/interview/ai"
-            className="btn btn-primary btn-sm"
-            style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
-          >
-            <RotateCcw size={15} />
-            <span>New Session</span>
-          </Link>
+          {!isInterviewer && (
+            <Link
+              to="/interview/ai"
+              className="btn btn-primary btn-sm"
+              style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
+            >
+              <RotateCcw size={15} />
+              <span>Practice AI</span>
+            </Link>
+          )}
         </div>
       </div>
 
-      {/* Main Scorecard Banner */}
+      {/* PAST INTERVIEW HEADER CARD */}
       <div style={{
         background: 'linear-gradient(135deg, #131b2e 0%, #0d1322 100%)',
         border: '1px solid var(--border-subtle)',
@@ -187,7 +346,7 @@ export default function InterviewResultsPage() {
               width: '110px',
               height: '110px',
               borderRadius: '50%',
-              background: `conic-gradient(#6366f1 ${overall * 10}%, rgba(255,255,255,0.05) 0)`,
+              background: `conic-gradient(#6366f1 ${overall !== 'N/A' ? Number(overall) * 10 : 0}%, rgba(255,255,255,0.05) 0)`,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -206,7 +365,9 @@ export default function InterviewResultsPage() {
                 <span style={{ fontSize: '2rem', fontWeight: 800, color: '#f9fafb', lineHeight: 1 }}>
                   {overall}
                 </span>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>out of 10</span>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  out of 10
+                </span>
               </div>
             </div>
 
@@ -219,33 +380,68 @@ export default function InterviewResultsPage() {
               border: `1px solid ${verdictStyle.border}`,
               color: verdictStyle.text,
             }}>
-              {evaluation.verdict || 'Completed'}
+              {evaluation.verdict || evaluation.recommendation || 'Completed'}
             </div>
           </div>
 
-          {/* Executive Summary */}
+          {/* Header Metadata */}
           <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', flexWrap: 'wrap' }}>
               <span className="badge badge-primary" style={{ fontSize: '0.8rem' }}>
-                {interview?.interview_type || 'Technical'} Mock Interview
+                {interview?.interview_type || 'Technical'} {isPeer ? 'Peer Interview' : 'AI Interview'}
               </span>
               <span className="badge badge-secondary" style={{ fontSize: '0.8rem' }}>
                 {interview?.difficulty || 'Medium'}
               </span>
-              {interview?.duration && (
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.25rem', marginLeft: '0.5rem' }}>
-                  <Clock size={13} />
-                  <span>{interview.duration} mins</span>
-                </span>
-              )}
+              <span className="badge badge-success" style={{ fontSize: '0.8rem' }}>
+                Past Interview
+              </span>
             </div>
 
-            <h1 style={{ fontSize: '1.85rem', marginBottom: '0.85rem', color: '#f9fafb' }}>
-              AI Interview Evaluation Debrief
+            <h1 style={{ fontSize: '1.85rem', marginBottom: '0.75rem', color: '#f9fafb' }}>
+              Historical Interview Debrief
             </h1>
 
-            <p style={{ color: '#cbd5e1', fontSize: '0.95rem', lineHeight: '1.7', margin: 0 }}>
-              {evaluation.summary}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '1rem', marginBottom: '1.25rem', background: 'rgba(255,255,255,0.02)', padding: '1rem', borderRadius: 'var(--radius-md)', border: '1px solid rgba(255,255,255,0.06)' }}>
+              <div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  {isInterviewer ? 'Candidate' : 'Interviewer'}
+                </div>
+                <div style={{ fontWeight: 700, color: '#f9fafb', fontSize: '1rem' }}>
+                  {isInterviewer ? (interview?.candidate_name || 'Candidate') : (interview?.interviewer_name || (isPeer ? 'Peer Interviewer' : 'MockMate AI'))}
+                </div>
+              </div>
+
+              <div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Date
+                </div>
+                <div style={{ fontWeight: 600, color: '#f9fafb', fontSize: '0.95rem' }}>
+                  {new Date(interview?.completion_time || interview?.created_at || Date.now()).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}
+                </div>
+              </div>
+
+              <div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Duration
+                </div>
+                <div style={{ fontWeight: 600, color: '#f9fafb', fontSize: '0.95rem' }}>
+                  {interview?.duration || 45} minutes
+                </div>
+              </div>
+
+              <div>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Overall Score
+                </div>
+                <div style={{ fontWeight: 800, color: '#818cf8', fontSize: '1rem' }}>
+                  {overall} / 10
+                </div>
+              </div>
+            </div>
+
+            <p style={{ color: '#cbd5e1', fontSize: '0.925rem', lineHeight: '1.6', margin: 0 }}>
+              {evaluation.summary || evaluation.interviewerFeedback || 'Comprehensive evaluation archived in Supabase for this completed interview.'}
             </p>
           </div>
         </div>
@@ -349,18 +545,62 @@ export default function InterviewResultsPage() {
         </div>
       </div>
 
-      {/* Question-by-Question Deep Dive */}
+      {/* Approach & Reasoning (if provided by peer interviewer) */}
+      {evaluation.approachReasoning && (
+        <div style={{
+          background: '#111827',
+          border: '1px solid var(--border-subtle)',
+          borderRadius: 'var(--radius-lg)',
+          padding: '1.75rem',
+          marginBottom: '2.5rem',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem', color: '#818cf8' }}>
+            <Cpu size={20} />
+            <h3 style={{ fontSize: '1.15rem', margin: 0, color: '#f9fafb' }}>Approach & Algorithmic Reasoning</h3>
+          </div>
+          <p style={{ color: '#cbd5e1', fontSize: '0.925rem', lineHeight: '1.6', margin: 0, whiteSpace: 'pre-wrap' }}>
+            {evaluation.approachReasoning}
+          </p>
+        </div>
+      )}
+
+      {/* Detailed Interviewer Feedback & Mentorship Advice */}
+      {evaluation.interviewerFeedback && (
+        <div style={{
+          background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.08) 0%, rgba(6, 182, 212, 0.04) 100%)',
+          border: '1px solid rgba(99, 102, 241, 0.25)',
+          borderRadius: 'var(--radius-lg)',
+          padding: '1.75rem',
+          marginBottom: '2.5rem',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem', color: '#38bdf8' }}>
+            <Sparkles size={20} />
+            <h3 style={{ fontSize: '1.15rem', margin: 0, color: '#f9fafb' }}>Interviewer Evaluation & Feedback</h3>
+          </div>
+          <p style={{ color: '#e2e8f0', fontSize: '0.95rem', lineHeight: '1.7', margin: 0, whiteSpace: 'pre-wrap' }}>
+            {evaluation.interviewerFeedback}
+          </p>
+        </div>
+      )}
+
+      {/* PROBLEMS SOLVED / ATTEMPTED */}
       {questions && questions.length > 0 && (
         <div style={{ marginBottom: '2.5rem' }}>
-          <h3 style={{ fontSize: '1.2rem', marginBottom: '1.25rem', color: '#f9fafb', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <FileText size={20} color="#818cf8" />
-            <span>Question-by-Question Evaluation</span>
-          </h3>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+            <h3 style={{ fontSize: '1.25rem', margin: 0, color: '#f9fafb', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <Code2 size={20} color="#818cf8" />
+              <span>Problems Solved & Attempted</span>
+            </h3>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+              {questions.length} {questions.length === 1 ? 'Problem' : 'Problems'} Evaluated
+            </span>
+          </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
             {questions.map((q, idx) => {
-              const ans = answerMap.get(q.id);
+              const res = getProblemResolution(q);
               const fb = (evaluation.questionFeedback || []).find((f) => f.questionOrder === (q.question_order || idx + 1));
+              const title = q.title || q.question_text?.split('\n')[0] || `Problem ${idx + 1}`;
 
               return (
                 <div
@@ -369,94 +609,118 @@ export default function InterviewResultsPage() {
                     background: '#111827',
                     border: '1px solid var(--border-subtle)',
                     borderRadius: 'var(--radius-lg)',
-                    padding: '1.5rem',
+                    padding: '1.75rem',
                   }}
                 >
-                  {/* Question Header */}
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '0.75rem' }}>
+                  {/* Problem Header */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.75rem' }}>
                     <div>
-                      <span className="badge badge-secondary" style={{ marginRight: '0.5rem', textTransform: 'capitalize' }}>
-                        {q.question_type || 'Problem'} #{q.question_order || idx + 1}
-                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.35rem', flexWrap: 'wrap' }}>
+                        <span style={{ fontWeight: 800, fontSize: '1.15rem', color: '#f9fafb' }}>
+                          {idx + 1}. {title}
+                        </span>
+                        <span className="badge badge-secondary" style={{ textTransform: 'capitalize' }}>
+                          {q.difficulty || 'Medium'}
+                        </span>
+                        {q.topic && (
+                          <span className="badge badge-secondary">
+                            {q.topic}
+                          </span>
+                        )}
+                        <span style={{ fontSize: '0.8rem', color: '#38bdf8', fontWeight: 600 }}>
+                          Language: {res.language}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '0.825rem', color: 'var(--text-muted)' }}>
+                        {res.result}
+                      </div>
                     </div>
 
-                    {fb?.score != null && (
-                      <div style={{
-                        padding: '0.2rem 0.65rem',
-                        borderRadius: 'var(--radius-sm)',
-                        background: 'rgba(99, 102, 241, 0.15)',
-                        border: '1px solid rgba(99, 102, 241, 0.3)',
-                        color: '#a5b4fc',
-                        fontSize: '0.8rem',
-                        fontWeight: 600,
-                      }}>
-                        Score: {fb.score} / 10
-                      </div>
-                    )}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                      <span
+                        style={{
+                          padding: '0.25rem 0.75rem',
+                          borderRadius: '9999px',
+                          fontSize: '0.8rem',
+                          fontWeight: 700,
+                          background: res.bg,
+                          color: res.color,
+                          border: `1px solid ${res.color}40`,
+                        }}
+                      >
+                        Status: {res.status}
+                      </span>
+                      {fb?.score != null && (
+                        <span style={{
+                          padding: '0.25rem 0.65rem',
+                          borderRadius: 'var(--radius-sm)',
+                          background: 'rgba(99, 102, 241, 0.15)',
+                          border: '1px solid rgba(99, 102, 241, 0.3)',
+                          color: '#a5b4fc',
+                          fontSize: '0.8rem',
+                          fontWeight: 700,
+                        }}>
+                          Score: {fb.score} / 10
+                        </span>
+                      )}
+                    </div>
                   </div>
 
-                  {/* Problem Statement */}
-                  <div style={{ fontSize: '0.95rem', color: '#f9fafb', fontWeight: 500, marginBottom: '1rem', lineHeight: '1.5' }}>
-                    {q.question_text}
-                  </div>
+                  {/* Problem Description Excerpt */}
+                  {q.description && (
+                    <div style={{ fontSize: '0.875rem', color: '#94a3b8', marginBottom: '1rem', lineHeight: 1.5, maxHeight: '80px', overflowY: 'auto' }}>
+                      {q.description}
+                    </div>
+                  )}
 
-                  {/* Candidate Answer / Code Snapshot */}
-                  {q.question_type === 'coding' ? (
+                  {/* Candidate Code Submission */}
+                  {res.code ? (
                     <div style={{ marginBottom: '1rem' }}>
-                      <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.35rem' }}>
-                        Candidate Code Submission:
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.35rem' }}>
+                        <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                          Final Submitted Code:
+                        </span>
+                        <span style={{ fontSize: '0.75rem', fontFamily: 'var(--font-mono)', color: '#38bdf8' }}>
+                          {res.language}
+                        </span>
                       </div>
                       <pre style={{
                         background: '#090d16',
-                        padding: '0.85rem 1rem',
+                        padding: '1rem 1.25rem',
                         borderRadius: 'var(--radius-sm)',
-                        border: '1px solid rgba(255,255,255,0.05)',
+                        border: '1px solid rgba(255,255,255,0.08)',
                         color: '#e2e8f0',
                         fontSize: '0.825rem',
                         fontFamily: 'var(--font-mono)',
-                        maxHeight: '200px',
+                        maxHeight: '260px',
                         overflowY: 'auto',
                         whiteSpace: 'pre-wrap',
                       }}>
-                        {ans?.code_snapshot || interview?.code || '// No code written'}
+                        {res.code}
                       </pre>
                     </div>
-                  ) : ans?.candidate_answer ? (
-                    <div style={{ marginBottom: '1rem' }}>
-                      <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '0.35rem' }}>
-                        Candidate Answer:
-                      </div>
-                      <div style={{
-                        background: '#090d16',
-                        padding: '0.85rem 1rem',
-                        borderRadius: 'var(--radius-sm)',
-                        border: '1px solid rgba(255,255,255,0.05)',
-                        color: '#cbd5e1',
-                        fontSize: '0.9rem',
-                        lineHeight: '1.5',
-                      }}>
-                        {ans.candidate_answer}
-                      </div>
+                  ) : (
+                    <div style={{ padding: '0.75rem 1rem', background: 'rgba(255,255,255,0.02)', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)', color: 'var(--text-muted)', fontSize: '0.85rem', marginBottom: '1rem' }}>
+                      No code snapshot recorded for this problem.
                     </div>
-                  ) : null}
+                  )}
 
                   {/* Evaluator Feedback */}
                   {fb && (
                     <div style={{
-                      background: 'rgba(99, 102, 241, 0.05)',
-                      border: '1px solid rgba(99, 102, 241, 0.2)',
+                      background: 'rgba(99, 102, 241, 0.06)',
+                      border: '1px solid rgba(99, 102, 241, 0.25)',
                       borderRadius: 'var(--radius-sm)',
                       padding: '1rem',
                     }}>
-                      <div style={{ fontSize: '0.825rem', fontWeight: 600, color: '#818cf8', marginBottom: '0.35rem' }}>
-                        AI Evaluator Feedback:
+                      <div style={{ fontSize: '0.825rem', fontWeight: 700, color: '#818cf8', marginBottom: '0.35rem' }}>
+                        Evaluator Problem Feedback:
                       </div>
                       <p style={{ fontSize: '0.875rem', color: '#cbd5e1', lineHeight: '1.5', margin: '0 0 0.5rem 0' }}>
                         {fb.feedback}
                       </p>
-
                       {fb.optimalApproach && (
-                        <div style={{ fontSize: '0.825rem', color: '#94a3b8', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '0.5rem' }}>
+                        <div style={{ fontSize: '0.825rem', color: '#94a3b8', borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '0.4rem' }}>
                           <span style={{ fontWeight: 600, color: '#38bdf8' }}>Optimal Strategy: </span>
                           <span>{fb.optimalApproach}</span>
                         </div>

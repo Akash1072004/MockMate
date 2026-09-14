@@ -16,7 +16,10 @@ import AIInterviewPage from './pages/AIInterviewPage';
 import JoinByCodePage from './pages/JoinByCodePage';
 import InterviewRoomPage from './pages/InterviewRoomPage';
 import InterviewResultsPage from './pages/InterviewResultsPage';
+import CreateQuestionPage from './pages/CreateQuestionPage';
+import EvaluationFormPage from './pages/EvaluationFormPage';
 import LeaderboardPage from './pages/LeaderboardPage';
+import PublicProfilePage from './pages/PublicProfilePage';
 import NotFoundPage from './pages/NotFoundPage';
 
 // Automatic role-based dashboard router
@@ -48,6 +51,8 @@ export default function App() {
             <Route path="/login" element={<LoginPage />} />
             <Route path="/signup" element={<SignupPage />} />
             <Route path="/leaderboard" element={<LeaderboardPage />} />
+            <Route path="/candidates/:username" element={<PublicProfilePage />} />
+            <Route path="/profile/:username" element={<PublicProfilePage />} />
 
             {/* Role redirect */}
             <Route path="/dashboard" element={<RoleBasedDashboardRedirect />} />
@@ -87,6 +92,22 @@ export default function App() {
                 </ProtectedRoute>
               }
             />
+            <Route
+              path="/interviewer/questions/create"
+              element={
+                <ProtectedRoute allowedRole="interviewer">
+                  <CreateQuestionPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/interviewer/questions/edit/:id"
+              element={
+                <ProtectedRoute allowedRole="interviewer">
+                  <CreateQuestionPage />
+                </ProtectedRoute>
+              }
+            />
 
             {/* Protected Profile route */}
             <Route
@@ -112,6 +133,14 @@ export default function App() {
               element={
                 <ProtectedRoute>
                   <InterviewRoomPage />
+                </ProtectedRoute>
+              }
+            />
+            <Route
+              path="/interview/evaluate/:id"
+              element={
+                <ProtectedRoute allowedRole="interviewer">
+                  <EvaluationFormPage />
                 </ProtectedRoute>
               }
             />
