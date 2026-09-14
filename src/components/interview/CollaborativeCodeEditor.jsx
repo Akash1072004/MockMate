@@ -1,4 +1,5 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
+import Editor from '@monaco-editor/react';
 import { LANGUAGE_OPTIONS } from '../../utils/codeTemplates';
 import { runCode } from '../../services/codeExecutionService';
 import { 
@@ -19,6 +20,7 @@ import {
 export default function CollaborativeCodeEditor({
   code,
   language,
+  availableLanguages = null,
   syncStatus,
   onCodeChange,
   onLanguageChange,
@@ -29,7 +31,10 @@ export default function CollaborativeCodeEditor({
   testCases = [],
   onRunSuccess = null,
 }) {
-  const textareaRef = useRef(null);
+  const editorRef = useRef(null);
+  const isLocalChangeRef = useRef(false);
+  const isApplyingRemoteRef = useRef(false);
+  const prevQuestionIdRef = useRef(questionId);
 
   // Execution state
   const [isRunning, setIsRunning] = useState(false);
@@ -39,47 +44,82 @@ export default function CollaborativeCodeEditor({
   const [execResult, setExecResult] = useState(null);
   const [selectedTestIdx, setSelectedTestIdx] = useState(0);
 
-  // Split into lines for line counter gutter
-  const lines = (code || '').split('\n');
-  const lineCount = Math.max(lines.length, 1);
+  // Keep latest handleRun in ref for Monaco keybinding
+  const handleRunRef = useRef(null);
 
-  // Handle Tab indentation & Ctrl+Enter to run
-  const handleKeyDown = (e) => {
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-      e.preventDefault();
-      handleRun();
-      return;
-    }
-
-    if (e.key === 'Tab') {
-      e.preventDefault();
-      const textarea = textareaRef.current;
-      if (!textarea) return;
-
-      const start = textarea.selectionStart;
-      const end = textarea.selectionEnd;
-
-      // Insert 4 spaces
-      const updated = code.substring(0, start) + '    ' + code.substring(end);
-      onCodeChange(updated);
-
-      // Re-position cursor after inserted spaces
-      setTimeout(() => {
-        textarea.selectionStart = textarea.selectionEnd = start + 4;
-      }, 0);
+  // Map internal language identifiers to official Monaco language IDs
+  const getMonacoLanguage = (lang) => {
+    switch (lang?.toLowerCase()) {
+      case 'cpp':
+      case 'c++':
+        return 'cpp';
+      case 'java':
+        return 'java';
+      case 'python':
+      case 'py':
+        return 'python';
+      case 'javascript':
+      case 'js':
+        return 'javascript';
+      default:
+        return 'python';
     }
   };
 
+  // Synchronize remote code updates to Monaco model smoothly without cursor jumping or model destruction
+  useEffect(() => {
+    if (!editorRef.current) return;
+    const model = editorRef.current.getModel();
+    if (!model) return;
+
+    const currentEditorValue = model.getValue();
+    if (code !== undefined && code !== null && currentEditorValue !== code && !isLocalChangeRef.current) {
+      isApplyingRemoteRef.current = true;
+      try {
+        if (prevQuestionIdRef.current !== questionId) {
+          prevQuestionIdRef.current = questionId;
+          editorRef.current.setValue(code);
+        } else {
+          editorRef.current.executeEdits('remote-sync', [{
+            range: model.getFullModelRange(),
+            text: code,
+            forceMoveMarkers: true,
+          }]);
+          editorRef.current.pushUndoStop();
+        }
+      } finally {
+        isApplyingRemoteRef.current = false;
+      }
+    } else if (prevQuestionIdRef.current !== questionId) {
+      prevQuestionIdRef.current = questionId;
+    }
+  }, [code, questionId]);
+
+  // Handle local user edits in Monaco
+  const handleEditorChange = (value) => {
+    // If change was initiated by our remote executeEdits, do not re-broadcast
+    if (isApplyingRemoteRef.current) return;
+
+    isLocalChangeRef.current = true;
+    onCodeChange(value ?? '');
+    queueMicrotask(() => {
+      isLocalChangeRef.current = false;
+    });
+  };
+
+  // Run Code execution handler
   const handleRun = async () => {
     if (isRunning) return;
     setIsRunning(true);
     setConsoleOpen(true);
     setActiveConsoleTab('output');
 
+    const codeToRun = editorRef.current ? editorRef.current.getValue() : code;
+
     try {
       const res = await runCode({
         language,
-        code,
+        code: codeToRun,
         testCases,
         customInput: customInput ? customInput : null,
         interviewId,
@@ -109,6 +149,27 @@ export default function CollaborativeCodeEditor({
     }
   };
 
+  handleRunRef.current = handleRun;
+
+  // Monaco Editor mount handler
+  const handleEditorMount = (editor, monaco) => {
+    editorRef.current = editor;
+
+    if (code && editor.getValue() !== code) {
+      editor.setValue(code);
+    }
+
+    // Attach Ctrl+Enter / Cmd+Enter shortcut directly to Monaco
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
+      if (handleRunRef.current) {
+        handleRunRef.current();
+      }
+    });
+
+    // Initial focus
+    editor.focus();
+  };
+
   const getVerdictBadge = (verdict) => {
     switch (verdict) {
       case 'AC':
@@ -125,6 +186,27 @@ export default function CollaborativeCodeEditor({
         return { label: verdict || 'Completed', bg: 'rgba(99, 102, 241, 0.15)', border: '#6366f1', text: '#818cf8', icon: <Cpu size={13} /> };
     }
   };
+
+  const selectableLanguages = React.useMemo(() => {
+    if (Array.isArray(availableLanguages) && availableLanguages.length > 0) {
+      const normalized = availableLanguages.map((l) => {
+        const lower = String(l).toLowerCase().trim();
+        if (lower === 'c++') return 'cpp';
+        if (lower === 'py') return 'python';
+        if (lower === 'js') return 'javascript';
+        return lower;
+      });
+      const filtered = LANGUAGE_OPTIONS.filter((opt) => normalized.includes(opt.id));
+      return filtered.length > 0 ? filtered : LANGUAGE_OPTIONS;
+    }
+    return LANGUAGE_OPTIONS;
+  }, [availableLanguages]);
+
+  useEffect(() => {
+    if (selectableLanguages.length > 0 && !selectableLanguages.some((l) => l.id === language)) {
+      onLanguageChange(selectableLanguages[0].id);
+    }
+  }, [selectableLanguages, language, onLanguageChange]);
 
   return (
     <div style={{
@@ -166,7 +248,7 @@ export default function CollaborativeCodeEditor({
               borderRadius: 'var(--radius-sm)'
             }}
           >
-            {LANGUAGE_OPTIONS.map((lang) => (
+            {selectableLanguages.map((lang) => (
               <option key={lang.id} value={lang.id}>
                 {lang.label}
               </option>
@@ -185,7 +267,7 @@ export default function CollaborativeCodeEditor({
           </button>
         </div>
 
-        {/* Center/Right: Run Code Button & Terminal Controls */}
+        {/* Center/Right: Realtime Status & Run Code Button */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
           {/* Realtime Synchronization Status Pill */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.75rem', marginRight: '0.5rem' }}>
@@ -274,65 +356,43 @@ export default function CollaborativeCodeEditor({
         </div>
       </div>
 
-      {/* Editor Body with Line Numbers */}
-      <div style={{
-        display: 'flex',
-        flex: 1,
-        position: 'relative',
-        overflow: 'hidden',
-        fontFamily: 'var(--font-mono)',
-        fontSize: '0.925rem',
-        lineHeight: '1.6',
-      }}>
-        {/* Line Numbers Gutter */}
-        <div style={{
-          width: '44px',
-          padding: '1rem 0.5rem',
-          background: '#0b101b',
-          borderRight: '1px solid rgba(255, 255, 255, 0.05)',
-          color: '#475569',
-          textAlign: 'right',
-          userSelect: 'none',
-          overflowY: 'hidden',
-          fontSize: '0.8rem',
-        }}>
-          {Array.from({ length: lineCount }, (_, i) => (
-            <div key={i + 1} style={{ height: '24px' }}>
-              {i + 1}
+      {/* Monaco Editor Container */}
+      <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+        <Editor
+          height="100%"
+          language={getMonacoLanguage(language)}
+          defaultValue={code}
+          onChange={handleEditorChange}
+          onMount={handleEditorMount}
+          theme="vs-dark"
+          options={{
+            fontSize: 14,
+            fontFamily: 'JetBrains Mono, Fira Code, Menlo, Monaco, Consolas, "Courier New", monospace',
+            lineNumbers: 'on',
+            roundedSelection: true,
+            scrollBeyondLastLine: false,
+            readOnly: readOnly,
+            minimap: { enabled: false },
+            automaticLayout: true,
+            tabSize: 4,
+            insertSpaces: true,
+            autoClosingBrackets: 'always',
+            autoClosingQuotes: 'always',
+            formatOnPaste: true,
+            folding: true,
+            bracketPairColorization: { enabled: true },
+            padding: { top: 12, bottom: 12 },
+            renderLineHighlight: 'all',
+            cursorBlinking: 'smooth',
+            smoothScrolling: true,
+          }}
+          loading={
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#818cf8', gap: '0.5rem' }}>
+              <RefreshCw size={18} style={{ animation: 'spin 1s linear infinite' }} />
+              <span>Loading Monaco Editor...</span>
             </div>
-          ))}
-        </div>
-
-        {/* Code Textarea */}
-        <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-          <textarea
-            ref={textareaRef}
-            value={code}
-            onChange={(e) => onCodeChange(e.target.value)}
-            onKeyDown={handleKeyDown}
-            readOnly={readOnly}
-            spellCheck={false}
-            autoCapitalize="none"
-            autoComplete="off"
-            autoCorrect="off"
-            placeholder={`// Write your ${language.toUpperCase()} code here...`}
-            style={{
-              width: '100%',
-              height: '100%',
-              padding: '1rem',
-              background: 'transparent',
-              border: 'none',
-              color: '#e2e8f0',
-              fontFamily: 'var(--font-mono)',
-              fontSize: '0.925rem',
-              lineHeight: '24px',
-              resize: 'none',
-              outline: 'none',
-              whiteSpace: 'pre',
-              tabSize: 4,
-            }}
-          />
-        </div>
+          }
+        />
       </div>
 
       {/* Interactive Execution Console Drawer */}
