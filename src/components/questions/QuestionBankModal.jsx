@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../../context/AuthContext';
 import { 
   X, 
   Search, 
@@ -12,10 +14,12 @@ import {
   RotateCw,
   Eye,
   FileCode2,
-  Sparkles
+  Sparkles,
+  Edit3,
+  Trash2,
+  AlertTriangle
 } from 'lucide-react';
-import { getQuestions } from '../../services/questionService';
-import CreateQuestionModal from './CreateQuestionModal';
+import { getQuestions, deleteQuestion } from '../../services/questionService';
 
 export default function QuestionBankModal({ 
   isOpen, 
@@ -24,13 +28,17 @@ export default function QuestionBankModal({
   interviewId = null,
   alreadySelectedIds = [] 
 }) {
+  const { user, role } = useAuth();
+  const navigate = useNavigate();
   const [questions, setQuestions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [difficulty, setDifficulty] = useState('All');
   const [topic, setTopic] = useState('All');
   const [selectedQuestion, setSelectedQuestion] = useState(null);
-  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [deletingQuestion, setDeletingQuestion] = useState(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
 
   const loadQuestions = async () => {
     setLoading(true);
@@ -61,6 +69,25 @@ export default function QuestionBankModal({
     }, 300);
     return () => clearTimeout(timer);
   }, [search]);
+
+  const handleConfirmDelete = async () => {
+    if (!deletingQuestion) return;
+    setIsDeleting(true);
+    setDeleteError('');
+    try {
+      await deleteQuestion(deletingQuestion.id, user?.id);
+      const remaining = questions.filter((q) => q.id !== deletingQuestion.id);
+      setQuestions(remaining);
+      if (selectedQuestion?.id === deletingQuestion.id) {
+        setSelectedQuestion(remaining.length > 0 ? remaining[0] : null);
+      }
+      setDeletingQuestion(null);
+    } catch (err) {
+      setDeleteError(err.message || 'Failed to delete question.');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -149,7 +176,10 @@ export default function QuestionBankModal({
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
               <button
                 type="button"
-                onClick={() => setShowCreateModal(true)}
+                onClick={() => {
+                  if (onClose) onClose();
+                  navigate('/interviewer/questions/create');
+                }}
                 className="btn btn-primary btn-sm"
                 style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
               >
@@ -341,21 +371,55 @@ export default function QuestionBankModal({
                       </div>
                     </div>
 
-                    {/* Add to Interview Action Button */}
-                    {onSelectQuestion && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onSelectQuestion(selectedQuestion);
-                          onClose();
-                        }}
-                        className="btn btn-primary btn-sm"
-                        style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
-                      >
-                        <Plus size={15} />
-                        <span>Select This Question</span>
-                      </button>
-                    )}
+                    {/* Action Buttons */}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                      {role === 'interviewer' && (selectedQuestion.created_by === user?.id || !selectedQuestion.created_by) && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (onClose) onClose();
+                              navigate(`/interviewer/questions/edit/${selectedQuestion.id}`);
+                            }}
+                            className="btn btn-outline btn-sm"
+                            style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', borderColor: '#38bdf8', color: '#38bdf8' }}
+                            title="Edit this problem"
+                          >
+                            <Edit3 size={14} />
+                            <span>Edit</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDeleteError('');
+                              setDeletingQuestion(selectedQuestion);
+                            }}
+                            className="btn btn-outline btn-sm"
+                            style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', borderColor: '#ef4444', color: '#f87171' }}
+                            title="Delete this problem"
+                          >
+                            <Trash2 size={14} />
+                            <span>Delete</span>
+                          </button>
+                        </>
+                      )}
+
+                      {onSelectQuestion && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onSelectQuestion(selectedQuestion);
+                            onClose();
+                          }}
+                          className="btn btn-primary btn-sm"
+                          style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                        >
+                          <Plus size={15} />
+                          <span>Select This Question</span>
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   {/* Problem Description */}
@@ -460,16 +524,128 @@ export default function QuestionBankModal({
         </div>
       </div>
 
-      {/* Create Question Modal */}
-      {showCreateModal && (
-        <CreateQuestionModal
-          isOpen={showCreateModal}
-          onClose={() => setShowCreateModal(false)}
-          onQuestionCreated={(created) => {
-            loadQuestions();
-            if (created) setSelectedQuestion(created);
+      {/* Delete Confirmation Modal */}
+      {deletingQuestion && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 1100,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: 'rgba(0, 0, 0, 0.75)',
+            backdropFilter: 'blur(4px)',
+            padding: '1rem',
           }}
-        />
+          onClick={() => !isDeleting && setDeletingQuestion(null)}
+        >
+          <div
+            style={{
+              backgroundColor: '#0f172a',
+              border: '1px solid rgba(239, 68, 68, 0.3)',
+              borderRadius: '0.75rem',
+              maxWidth: '480px',
+              width: '100%',
+              padding: '1.5rem',
+              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5)',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+              <div
+                style={{
+                  width: '2.5rem',
+                  height: '2.5rem',
+                  borderRadius: '0.5rem',
+                  backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                  color: '#ef4444',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  flexShrink: 0,
+                }}
+              >
+                <Trash2 size={20} />
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '1.125rem', fontWeight: 600, color: '#f8fafc' }}>
+                  Delete Question
+                </h3>
+                <p style={{ margin: '0.2rem 0 0 0', fontSize: '0.85rem', color: '#94a3b8' }}>
+                  This action will archive this question from the Question Bank.
+                </p>
+              </div>
+            </div>
+
+            <div
+              style={{
+                backgroundColor: 'rgba(255, 255, 255, 0.03)',
+                border: '1px solid rgba(255, 255, 255, 0.08)',
+                borderRadius: '0.5rem',
+                padding: '0.875rem 1rem',
+                marginBottom: '1rem',
+              }}
+            >
+              <div style={{ fontSize: '0.75rem', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                Question Title
+              </div>
+              <div style={{ fontSize: '1rem', fontWeight: 600, color: '#f1f5f9', marginTop: '0.25rem' }}>
+                {deletingQuestion.title}
+              </div>
+              <div style={{ fontSize: '0.8rem', color: '#64748b', marginTop: '0.5rem' }}>
+                Topic: <span style={{ color: '#cbd5e1' }}>{deletingQuestion.topic}</span> • Difficulty:{' '}
+                <span style={{ color: '#cbd5e1' }}>{deletingQuestion.difficulty}</span>
+              </div>
+            </div>
+
+            <p style={{ fontSize: '0.85rem', color: '#cbd5e1', lineHeight: '1.5', margin: '0 0 1.25rem 0' }}>
+              Are you sure you want to delete this question? It will be safely archived so that completed interviews referencing it retain historical validity, but it will no longer be assignable in new interviews.
+            </p>
+
+            {deleteError && (
+              <div
+                style={{
+                  backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                  border: '1px solid rgba(239, 68, 68, 0.3)',
+                  color: '#f87171',
+                  borderRadius: '0.375rem',
+                  padding: '0.625rem 0.875rem',
+                  fontSize: '0.85rem',
+                  marginBottom: '1rem',
+                }}
+              >
+                {deleteError}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={isDeleting}
+                onClick={() => setDeletingQuestion(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                disabled={isDeleting}
+                onClick={handleConfirmDelete}
+                style={{
+                  backgroundColor: '#dc2626',
+                  color: '#ffffff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '0.5rem',
+                }}
+              >
+                {isDeleting ? 'Deleting...' : 'Delete Question'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </>
   );

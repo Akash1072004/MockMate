@@ -46,10 +46,20 @@ public class Solution {
     }
 }
 `,
+
+  javascript: `// JavaScript (Node.js) Solution
+function solve() {
+    // Implement your algorithm solution here
+    console.log("Solution executed successfully");
+}
+
+solve();
+`,
 };
 
 export const LANGUAGE_OPTIONS = [
   { id: 'python', label: 'Python 3', ext: 'py' },
   { id: 'cpp', label: 'C++ (GCC)', ext: 'cpp' },
   { id: 'java', label: 'Java 21', ext: 'java' },
+  { id: 'javascript', label: 'JavaScript (Node.js)', ext: 'js' },
 ];

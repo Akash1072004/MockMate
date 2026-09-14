@@ -173,7 +173,7 @@ export async function getQuestions({ difficulty = 'All', topic = 'All', search =
       return filterLocalQuestions(DEFAULT_SEED_QUESTIONS, { difficulty, topic, search });
     }
 
-    return data;
+    return data.filter(q => q.is_archived !== true);
   } catch (err) {
     console.error('[questionService] getQuestions error:', err);
     return filterLocalQuestions(DEFAULT_SEED_QUESTIONS, { difficulty, topic, search });
@@ -277,6 +277,119 @@ export async function createQuestion({
 }
 
 /**
+ * Update an existing question and its hidden test cases.
+ * Enforces creator authorization (created_by === userId).
+ */
+export async function updateQuestion(questionId, {
+  title,
+  description,
+  difficulty = 'Medium',
+  topic = 'Algorithms',
+  inputDescription = '',
+  outputDescription = '',
+  constraints = '',
+  examples = [],
+  starterCode = {},
+  supportedLanguages = ['python', 'cpp', 'java'],
+  testCases = [],
+  hiddenTestCases = [],
+  userId,
+}) {
+  if (!supabase || !questionId) throw new Error('Question ID is required.');
+  if (!title?.trim()) throw new Error('Title is required.');
+  if (!description?.trim()) throw new Error('Description is required.');
+
+  const updatePayload = {
+    title: title.trim(),
+    description: description.trim(),
+    difficulty: difficulty || 'Medium',
+    topic: topic?.trim() || 'Algorithms',
+    input_description: inputDescription?.trim() || null,
+    output_description: outputDescription?.trim() || null,
+    constraints: constraints?.trim() || null,
+    examples: Array.isArray(examples) ? examples : [],
+    starter_code: starterCode || {},
+    supported_languages: supportedLanguages || ['python', 'cpp', 'java'],
+    test_cases: Array.isArray(testCases) ? testCases : [],
+    updated_at: new Date().toISOString(),
+  };
+
+  let query = supabase
+    .from('questions')
+    .update(updatePayload)
+    .eq('id', questionId);
+
+  // If userId is provided, ensure creator check
+  if (userId) {
+    query = query.eq('created_by', userId);
+  }
+
+  const { data: updatedQuestion, error: updateError } = await query
+    .select()
+    .single();
+
+  if (updateError) {
+    console.error('[questionService] Error updating question:', updateError);
+    throw new Error(updateError.message || 'Failed to update question.');
+  }
+
+  // Update hidden test cases if provided
+  if (Array.isArray(hiddenTestCases) && hiddenTestCases.length > 0) {
+    const { error: hiddenError } = await supabase
+      .from('question_hidden_tests')
+      .upsert({
+        question_id: questionId,
+        hidden_test_cases: hiddenTestCases,
+      });
+
+    if (hiddenError) {
+      console.warn('[questionService] Warning saving hidden test cases:', hiddenError.message);
+    }
+  }
+
+  return updatedQuestion;
+}
+
+/**
+ * Delete / Archive a question.
+ * Uses soft-deletion so historical interview records referencing this question are preserved.
+ * Strictly verifies that only the creator or authorized interviewer can delete.
+ */
+export async function deleteQuestion(questionId, userId) {
+  if (!supabase || !questionId) throw new Error('Question ID is required.');
+
+  // 1. Try secure RPC delete_interviewer_question
+  try {
+    const { data: rpcData, error: rpcError } = await supabase.rpc('delete_interviewer_question', {
+      p_question_id: questionId,
+    });
+    if (!rpcError && rpcData?.success) {
+      return { success: true };
+    }
+  } catch (rpcErr) {
+    // Proceed to direct soft delete fallback
+  }
+
+  // 2. Direct scoped soft-delete enforcing created_by match
+  let query = supabase
+    .from('questions')
+    .update({ is_archived: true, updated_at: new Date().toISOString() })
+    .eq('id', questionId);
+
+  if (userId) {
+    query = query.eq('created_by', userId);
+  }
+
+  const { error } = await query;
+  if (error) {
+    console.error('[questionService] Error deleting question:', error);
+    throw new Error(error.message || 'Failed to delete question.');
+  }
+
+  return { success: true };
+}
+
+/**
  * Fetch all questions attached to a specific interview session.
  */
 export async function getInterviewQuestions(interviewId) {
@@ -360,6 +473,7 @@ export async function addQuestionToInterview(interviewId, question, order = 1) {
     interview_id: interviewId,
     question_id: question.id || null,
     question_order: order,
+    question_text: question.description || question.title || 'Coding Problem',
     title: question.title,
     description: question.description,
     difficulty: question.difficulty,

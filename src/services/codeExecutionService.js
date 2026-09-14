@@ -1,6 +1,6 @@
 import { supabase } from '../lib/supabase';
+import { getApiBaseUrl } from '../utils/apiConfig';
 
-const API_BASE_URL = 'http://localhost:5000/api';
 
 /**
  * Executes source code via backend child process execution engine.
@@ -16,7 +16,8 @@ export async function runCode({
   timeoutMs = 5000,
 }) {
   try {
-    const response = await fetch(`${API_BASE_URL}/run`, {
+    const apiBase = getApiBaseUrl();
+    const response = await fetch(`${apiBase}/run`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -41,6 +42,7 @@ export async function runCode({
     return data;
   } catch (err) {
     console.error('[codeExecutionService] runCode error:', err);
+    const isNetworkError = !err.status && (err.name === 'TypeError' || (err.message && err.message.toLowerCase().includes('failed to fetch')));
     return {
       success: false,
       verdict: 'RE',
@@ -48,7 +50,9 @@ export async function runCode({
       totalCount: Math.max(testCases.length, 1),
       executionTimeMs: 0,
       output: '',
-      error: err.message || 'Failed to connect to code execution server.',
+      error: isNetworkError
+        ? 'Code execution server is unreachable. Please ensure the backend is running and reachable over LAN.'
+        : (err.message || 'Execution service returned an error.'),
       testResults: [],
     };
   }
