@@ -2,11 +2,21 @@ import React from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { Bot, LogOut, User, LayoutDashboard, Trophy, Award } from 'lucide-react';
+import ProfileDropdown from './ProfileDropdown';
+import { usePresencePublisher } from '../../hooks/usePresence';
 
 export default function Navbar() {
   const location = useLocation();
   const navigate = useNavigate();
   const { user, profile, role, signOut } = useAuth();
+
+  // Publish global presence when interviewer is logged in anywhere on the platform
+  usePresencePublisher({
+    user,
+    role,
+    isAvailable: profile?.is_available !== false,
+    inInterview: location.pathname.includes('/interview/') && !location.pathname.includes('/interview/ai'),
+  });
 
   const handleSignOut = async () => {
     try {
@@ -42,6 +52,24 @@ export default function Navbar() {
                 <LayoutDashboard size={16} />
                 <span>Dashboard</span>
               </Link>
+              {role === 'candidate' && (
+                <>
+                  <Link 
+                    to="/candidate/find-interviewer" 
+                    className={`nav-link ${location.pathname === '/candidate/find-interviewer' ? 'active' : ''}`}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                  >
+                    <span>Find Interviewer</span>
+                  </Link>
+                  <Link 
+                    to="/join" 
+                    className={`nav-link ${location.pathname === '/join' ? 'active' : ''}`}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                  >
+                    <span>Join by Code</span>
+                  </Link>
+                </>
+              )}
               <Link 
                 to="/leaderboard" 
                 className={`nav-link ${location.pathname === '/leaderboard' ? 'active' : ''}`}
@@ -61,22 +89,7 @@ export default function Navbar() {
             </nav>
 
             <div className="nav-actions">
-              <span className={`badge ${role === 'interviewer' ? 'badge-success' : 'badge-primary'}`}>
-                {role === 'interviewer' ? 'Interviewer' : 'Candidate'}
-              </span>
-
-              <span style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-primary)', maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {displayName}
-              </span>
-
-              <button 
-                onClick={handleSignOut} 
-                className="btn btn-outline btn-sm"
-                title="Sign out of MockMate"
-              >
-                <LogOut size={15} />
-                <span>Sign Out</span>
-              </button>
+              <ProfileDropdown />
             </div>
           </>
         ) : (
