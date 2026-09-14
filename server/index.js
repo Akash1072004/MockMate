@@ -51,10 +51,12 @@ app.use(express.urlencoded({ extended: true }));
 import questionsRouter from './routes/questions.js';
 import runRouter from './routes/run.js';
 import evaluateRouter from './routes/evaluate.js';
+import interviewsRouter from './routes/interviews.js';
 
 app.use('/api/questions', questionsRouter);
 app.use('/api/run', runRouter);
 app.use('/api/evaluate', evaluateRouter);
+app.use('/api/interviews', interviewsRouter);
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',

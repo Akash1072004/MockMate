@@ -1,5 +1,5 @@
 import express from 'express';
-import { generateInterviewQuestions } from '../services/geminiService.js';
+import { generateInterviewQuestions, generateAITurn } from '../services/geminiService.js';
 
 const router = express.Router();
 
@@ -49,6 +49,46 @@ router.post('/', async (req, res, next) => {
     });
   } catch (err) {
     console.error('[API /api/questions Error]:', err);
+    next(err);
+  }
+});
+
+/**
+ * POST /api/questions/ai-turn
+ * Conversational turn in the 7-stage Resume-Aware AI Mock Interview
+ */
+router.post('/ai-turn', async (req, res, next) => {
+  try {
+    const {
+      stage = 'introduction',
+      candidateName = 'Candidate',
+      resumeText = '',
+      history = [],
+      lastUserMessage = '',
+      interviewType = 'Technical',
+      difficulty = 'Medium',
+      codingProblem = null,
+      code = '',
+    } = req.body || {};
+
+    const turnResult = await generateAITurn({
+      stage,
+      candidateName,
+      resumeText,
+      history,
+      lastUserMessage,
+      interviewType,
+      difficulty,
+      codingProblem,
+      code,
+    });
+
+    return res.json({
+      success: true,
+      ...turnResult,
+    });
+  } catch (err) {
+    console.error('[API /api/questions/ai-turn Error]:', err);
     next(err);
   }
 });

@@ -176,12 +176,39 @@ Return ONLY a JSON object with this exact structure:
       if (responseText) {
         const parsed = JSON.parse(responseText);
         if (parsed.questions && Array.isArray(parsed.questions) && parsed.questions.length > 0) {
+          console.log(`[GeminiService] Successfully generated ${parsed.questions.length} questions via gemini-2.5-flash`);
           return parsed.questions;
         }
       }
     } catch (err) {
-      console.warn('[GeminiService] Gemini question generation error, falling back to curated track questions:', err.message);
+      // Diagnostic logging - safely sanitizes any token/key strings
+      const sanitizedMsg = (err?.message || '').replace(/key=[a-zA-Z0-9_\-]+/gi, 'key=[REDACTED]');
+      console.error('[GeminiService Diagnostics] Generation failed with Gemini API:', {
+        model: 'gemini-2.5-flash',
+        status: err?.status || err?.statusCode || 500,
+        code: err?.code || 'GEMINI_ERROR',
+        message: sanitizedMsg,
+      });
+
+      // Classify error for safe reporting
+      const errLower = sanitizedMsg.toLowerCase();
+      let classifiedMsg = 'AI question generation is temporarily unavailable.';
+      let statusCode = 500;
+      if (err?.status === 401 || errLower.includes('api key') || errLower.includes('unauthenticated')) {
+        classifiedMsg = 'Gemini authentication failed. Please verify API key configuration.';
+        statusCode = 401;
+      } else if (err?.status === 404 || errLower.includes('not found') || errLower.includes('unsupported')) {
+        classifiedMsg = 'Gemini model not found or currently unsupported.';
+        statusCode = 404;
+      } else if (err?.status === 429 || errLower.includes('quota') || errLower.includes('rate limit') || errLower.includes('resource_exhausted')) {
+        classifiedMsg = 'Gemini API quota or rate limit exceeded. Please try again later.';
+        statusCode = 429;
+      }
+
+      console.warn(`[GeminiService] Falling back to curated track questions after error: ${classifiedMsg}`);
     }
+  } else {
+    console.warn('[GeminiService] GEMINI_API_KEY is not configured or placeholder, using curated track questions.');
   }
 
   // Fallback to track questions
@@ -363,5 +390,199 @@ Return ONLY a JSON object with this exact structure:
           ? q.hints.join(' ')
           : 'Break problem into smaller subproblems and evaluate complexity trade-offs.',
     })),
+  };
+}
+
+/**
+ * Curated coding problems with verified multi-language boilerplate
+ */
+const CURATED_CODING_PROBLEMS = [
+  {
+    id: 'two-sum',
+    title: 'Two Sum',
+    difficulty: 'Easy',
+    topic: 'Arrays & Hashing',
+    description: 'Given an array of integers `nums` and an integer `target`, return indices of the two numbers such that they add up to `target`. You may assume that each input would have exactly one solution, and you may not use the same element twice.',
+    input_format: 'An array of integers `nums` and an integer `target`.',
+    output_format: 'Array of two integers [index1, index2].',
+    constraints: '2 <= nums.length <= 10^4\n-10^9 <= nums[i] <= 10^9\n-10^9 <= target <= 10^9\nOnly one valid answer exists.',
+    examples: [
+      { input: 'nums = [2,7,11,15], target = 9', output: '[0,1]', explanation: 'Because nums[0] + nums[1] == 9, we return [0, 1].' },
+      { input: 'nums = [3,2,4], target = 6', output: '[1,2]', explanation: 'Because nums[1] + nums[2] == 6, we return [1, 2].' }
+    ],
+    starter_code: {
+      python: 'def twoSum(nums: list[int], target: int) -> list[int]:\n    # Write your solution here\n    pass',
+      cpp: '#include <vector>\nusing namespace std;\n\nclass Solution {\npublic:\n    vector<int> twoSum(vector<int>& nums, int target) {\n        // Write your solution here\n        return {};\n    }\n};',
+      java: 'class Solution {\n    public int[] twoSum(int[] nums, int target) {\n        // Write your solution here\n        return new int[]{};\n    }\n}'
+    }
+  },
+  {
+    id: 'valid-palindrome',
+    title: 'Valid Palindrome',
+    difficulty: 'Easy',
+    topic: 'Two Pointers',
+    description: 'A phrase is a palindrome if, after converting all uppercase letters into lowercase letters and removing all non-alphanumeric characters, it reads the same forward and backward. Alphanumeric characters include letters and numbers. Given a string `s`, return `true` if it is a palindrome, or `false` otherwise.',
+    input_format: 'A single string `s`.',
+    output_format: 'Boolean `true` or `false`.',
+    constraints: '1 <= s.length <= 2 * 10^5\ns consists only of printable ASCII characters.',
+    examples: [
+      { input: 's = "A man, a plan, a canal: Panama"', output: 'true', explanation: '"amanaplanacanalpanama" is a palindrome.' },
+      { input: 's = "race a car"', output: 'false', explanation: '"raceacar" is not a palindrome.' }
+    ],
+    starter_code: {
+      python: 'def isPalindrome(s: str) -> bool:\n    # Write your solution here\n    pass',
+      cpp: '#include <string>\nusing namespace std;\n\nclass Solution {\npublic:\n    bool isPalindrome(string s) {\n        // Write your solution here\n        return false;\n    }\n};',
+      java: 'class Solution {\n    public boolean isPalindrome(String s) {\n        // Write your solution here\n        return false;\n    }\n}'
+    }
+  },
+  {
+    id: 'longest-substring',
+    title: 'Longest Substring Without Repeating Characters',
+    difficulty: 'Medium',
+    topic: 'Sliding Window',
+    description: 'Given a string `s`, find the length of the longest substring without duplicate characters.',
+    input_format: 'A single string `s`.',
+    output_format: 'Integer representing the maximum length.',
+    constraints: '0 <= s.length <= 5 * 10^4\ns consists of English letters, digits, symbols and spaces.',
+    examples: [
+      { input: 's = "abcabcbb"', output: '3', explanation: 'The answer is "abc", with the length of 3.' },
+      { input: 's = "bbbbb"', output: '1', explanation: 'The answer is "b", with the length of 1.' }
+    ],
+    starter_code: {
+      python: 'def lengthOfLongestSubstring(s: str) -> int:\n    # Write your solution here\n    pass',
+      cpp: '#include <string>\nusing namespace std;\n\nclass Solution {\npublic:\n    int lengthOfLongestSubstring(string s) {\n        // Write your solution here\n        return 0;\n    }\n};',
+      java: 'class Solution {\n    public int lengthOfLongestSubstring(String s) {\n        // Write your solution here\n        return 0;\n    }\n}'
+    }
+  }
+];
+
+/**
+ * Conversational turn handler for Resume-Aware AI Interview across 7 stages:
+ * Stage 1: Introduction
+ * Stage 2: Personal/Background
+ * Stage 3: Resume Deep Dive
+ * Stage 4: Technical Questions
+ * Stage 5: Coding Problem (Monaco)
+ * Stage 6: Follow-up & Complexity
+ * Stage 7: Evaluation
+ */
+export async function generateAITurn({
+  stage = 'introduction',
+  candidateName = 'Candidate',
+  resumeText = '',
+  history = [],
+  lastUserMessage = '',
+  interviewType = 'Technical',
+  difficulty = 'Medium',
+  codingProblem = null,
+  code = '',
+}) {
+  const apiKey = process.env.GEMINI_API_KEY;
+
+  if (apiKey && apiKey !== 'your-gemini-api-key') {
+    try {
+      const ai = new GoogleGenAI({ apiKey });
+
+      const systemPrompt = `You are Alex Vance, a Senior Staff Software Engineer and friendly, professional Technical Interviewer conducting a mock interview on MockMate.
+Candidate: ${candidateName}
+Track: ${interviewType} (${difficulty} level)
+Resume / Candidate Profile:
+"""
+${resumeText || 'No custom resume text provided. Candidate is practicing for software engineering.'}
+"""
+
+Current Stage: ${stage}
+Stages Progression:
+1. "introduction" - Welcome warmly, set the agenda, ask the candidate to briefly introduce their background.
+2. "personal" - Acknowledge their intro, ask about projects or technologies they feel most confident with.
+3. "resume_dive" - Deep-dive into an actual project or technology mentioned on their resume (e.g. system architecture, tough bugs, trade-offs).
+4. "technical" - Ask a conceptual engineering question matching the candidate's track.
+5. "coding" - Introduce the coding problem clearly and ask the candidate to walk through their approach before or while coding in Monaco.
+6. "followup" - Ask about time & space complexity, edge cases, or how they'd scale their solution.
+7. "evaluation" - Conclude politely, summarize key strengths, and let them know the session is ready for evaluation.
+
+Instructions:
+- Be concise, conversational, authentic, and encouraging.
+- Speak directly in 2-4 sentences like a real human interviewer on a video call.
+- Transition naturally to the next stage when appropriate.
+- Return ONLY JSON in this format:
+{
+  "reply": "Your spoken conversational response/question to the candidate...",
+  "nextStage": "the next stage string (same or incremented stage)",
+  "transitionToCoding": false
+}`;
+
+      const conversationSummary = history.map((m) => `${m.role === 'assistant' ? 'Interviewer' : 'Candidate'}: ${m.content}`).join('\n');
+      const fullPrompt = `${systemPrompt}\n\nRecent Conversation:\n${conversationSummary}\nCandidate just said:\n"${lastUserMessage || '(Session starting)'}"`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: fullPrompt,
+        config: {
+          responseMimeType: 'application/json',
+          temperature: 0.4,
+        },
+      });
+
+      const responseText = response.text;
+      if (responseText) {
+        const parsed = JSON.parse(responseText);
+        if (parsed.reply) {
+          let selectedCodingProblem = codingProblem;
+          if ((stage === 'coding' || parsed.nextStage === 'coding' || parsed.transitionToCoding) && !selectedCodingProblem) {
+            selectedCodingProblem = CURATED_CODING_PROBLEMS[0];
+          }
+
+          return {
+            reply: parsed.reply,
+            nextStage: parsed.nextStage || stage,
+            codingProblem: selectedCodingProblem,
+          };
+        }
+      }
+    } catch (err) {
+      console.warn('[GeminiService] AI turn generation failed with Gemini, using conversational heuristics:', err.message);
+    }
+  }
+
+  // Fallback conversational turn logic
+  const stageResponses = {
+    introduction: {
+      reply: `Hi ${candidateName}, welcome to MockMate! I'm your AI interviewer today. We'll start with a brief overview of your background, take a look at your projects and technologies, and then move on to a technical coding problem. To kick things off, could you introduce yourself and tell me a bit about your journey in software engineering?`,
+      nextStage: 'personal',
+    },
+    personal: {
+      reply: `Thank you for sharing that, ${candidateName}! It's great to hear about your background. What kind of engineering projects have you been most excited about recently, and which programming languages or frameworks do you feel most comfortable working in?`,
+      nextStage: 'resume_dive',
+    },
+    resume_dive: {
+      reply: `I see from your background and experience that you've worked on building application features and solving technical problems. Can you walk me through one specific technical challenge you faced on a project, what approach you took to debug or resolve it, and what trade-offs you considered?`,
+      nextStage: 'technical',
+    },
+    technical: {
+      reply: `That's a thoughtful approach to engineering trade-offs. Before we dive into the live coding editor, could you explain how you evaluate time and space complexity when designing an algorithm, particularly when choosing between hash tables and tree-based data structures?`,
+      nextStage: 'coding',
+      codingProblem: CURATED_CODING_PROBLEMS[0],
+    },
+    coding: {
+      reply: `Great! Let's move on to the coding challenge. On your screen, you'll find the "${CURATED_CODING_PROBLEMS[0].title}" problem. Take a moment to read through the requirements and constraints. Feel free to talk through your initial thoughts and edge cases before you write your implementation in the editor!`,
+      nextStage: 'followup',
+      codingProblem: CURATED_CODING_PROBLEMS[0],
+    },
+    followup: {
+      reply: `Nice work walking through the solution! How would you analyze the time and space complexity of this approach? Are there any boundary cases or large inputs that could impact performance?`,
+      nextStage: 'evaluation',
+    },
+    evaluation: {
+      reply: `Excellent job today, ${candidateName}! You demonstrated clear communication, solid problem decomposition, and good technical reasoning. We have gathered all the notes from your interview. Whenever you're ready, click "Complete Interview" to view your comprehensive evaluation report!`,
+      nextStage: 'evaluation',
+    },
+  };
+
+  const turn = stageResponses[stage] || stageResponses.introduction;
+  return {
+    reply: turn.reply,
+    nextStage: turn.nextStage,
+    codingProblem: turn.codingProblem || codingProblem || (turn.nextStage === 'coding' ? CURATED_CODING_PROBLEMS[0] : null),
   };
 }

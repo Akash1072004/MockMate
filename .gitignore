@@ -32,3 +32,6 @@ server/.env.*
 *.njsproj
 *.sln
 *.sw?
+
+# Temporary scratch test files
+scratch/
