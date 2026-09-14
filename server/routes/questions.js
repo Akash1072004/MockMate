@@ -14,27 +14,22 @@ router.post('/', async (req, res, next) => {
   try {
     let { interviewType, difficulty, duration } = req.body || {};
 
-    // Validate and sanitize interview track
     if (!interviewType || !VALID_TRACKS.includes(String(interviewType).trim())) {
       interviewType = 'Technical';
     } else {
       interviewType = String(interviewType).trim();
     }
 
-    // Validate and sanitize difficulty level
     if (!difficulty || !VALID_DIFFICULTIES.includes(String(difficulty).trim())) {
       difficulty = 'Medium';
     } else {
       difficulty = String(difficulty).trim();
     }
 
-    // Validate and clamp duration
     let numDuration = Number(duration);
     if (isNaN(numDuration) || numDuration < 15 || numDuration > 120) {
       numDuration = 30;
     }
-
-    console.log(`[API /api/questions] Validated request -> Track: ${interviewType}, Difficulty: ${difficulty}, Duration: ${numDuration}m`);
 
     const questions = await generateInterviewQuestions({
       interviewType,
@@ -55,7 +50,8 @@ router.post('/', async (req, res, next) => {
 
 /**
  * POST /api/questions/ai-turn
- * Conversational turn in the 7-stage Resume-Aware AI Mock Interview
+ * Conversational turn in the 7-stage Resume-Aware AI Mock Interview.
+ * Supports stage pinning, intent, and follow-up count.
  */
 router.post('/ai-turn', async (req, res, next) => {
   try {
@@ -69,6 +65,8 @@ router.post('/ai-turn', async (req, res, next) => {
       difficulty = 'Medium',
       codingProblem = null,
       code = '',
+      intent = 'ask_stage_question',
+      followUpCount = 0,
     } = req.body || {};
 
     const turnResult = await generateAITurn({
@@ -81,6 +79,8 @@ router.post('/ai-turn', async (req, res, next) => {
       difficulty,
       codingProblem,
       code,
+      intent,
+      followUpCount,
     });
 
     return res.json({

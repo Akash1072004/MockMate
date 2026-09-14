@@ -8,11 +8,17 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 /**
  * POST /api/evaluate
  * Securely evaluates candidate performance using Gemini 2.5 Flash.
- * Enforces UUID format validation and persists evaluation results.
+ * Enforces UUID format validation, accepts authoritative transcript/qaHistory/codeSnapshot,
+ * and persists evaluation results.
  */
 router.post('/', async (req, res, next) => {
   try {
-    const { interviewId } = req.body || {};
+    const {
+      interviewId,
+      transcript = [],
+      qaHistory = [],
+      codeSnapshot = '',
+    } = req.body || {};
 
     if (!interviewId || typeof interviewId !== 'string' || !UUID_REGEX.test(interviewId.trim())) {
       return res.status(400).json({
@@ -87,12 +93,15 @@ router.post('/', async (req, res, next) => {
       }
     }
 
-    // Generate comprehensive evaluation using Gemini
+    // Generate comprehensive evaluation using Gemini with authoritative transcript & qaHistory
     const evaluation = await generateEvaluationReport({
       interview,
       questions,
       answers,
       submissions,
+      transcript,
+      qaHistory,
+      codeSnapshot,
     });
 
     // Save to database

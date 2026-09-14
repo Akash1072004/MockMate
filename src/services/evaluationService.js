@@ -3,8 +3,9 @@ import { getApiBaseUrl } from '../utils/apiConfig';
 
 /**
  * Triggers AI evaluation for a completed interview via backend Gemini service.
+ * Accepts optional authoritative transcript, qaHistory, and codeSnapshot.
  */
-export async function requestEvaluation(interviewId) {
+export async function requestEvaluation(interviewId, { transcript = [], qaHistory = [], codeSnapshot = '' } = {}) {
   if (!interviewId) throw new Error('Interview ID is required');
 
   const apiBase = getApiBaseUrl();
@@ -13,7 +14,12 @@ export async function requestEvaluation(interviewId) {
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ interviewId }),
+    body: JSON.stringify({
+      interviewId,
+      transcript,
+      qaHistory,
+      codeSnapshot,
+    }),
   });
 
   if (!response.ok) {
@@ -210,4 +216,3 @@ export async function submitPeerEvaluation({
 
   return updated;
 }
-

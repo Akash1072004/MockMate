@@ -1,9 +1,14 @@
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 
-/**
- * Service for configuring, running, and persisting AI mock interview sessions.
- * Questions generated via backend Gemini endpoint and saved to Supabase PostgreSQL.
- */
+export const AI_STAGE_DEFINITIONS = [
+  { key: 'introduction', order: 1, title: 'Introduction & Background Overview', type: 'behavioral' },
+  { key: 'personal', order: 2, title: 'Engineering Passion & Core Stacks', type: 'behavioral' },
+  { key: 'resume_dive', order: 3, title: 'Resume Deep Dive & Architecture Decisions', type: 'conceptual' },
+  { key: 'technical', order: 4, title: 'Technical Concepts & System Trade-offs', type: 'conceptual' },
+  { key: 'coding', order: 5, title: 'Live Algorithmic Problem Solving', type: 'coding' },
+  { key: 'followup', order: 6, title: 'Complexity Analysis & Scale Edge Cases', type: 'conceptual' },
+  { key: 'evaluation', order: 7, title: 'Session Debrief & Overall Feedback', type: 'behavioral' },
+];
 
 // Initialize a new AI interview session
 export async function startAIInterview({
@@ -17,34 +22,17 @@ export async function startAIInterview({
     throw new Error('Candidate authentication is required to start an AI interview.');
   }
 
-  // 1. Request tailored questions from Express backend (Gemini API)
-  const response = await fetch('/api/questions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ interviewType, difficulty, duration }),
-  });
-
-  if (!response.ok) {
-    const errData = await response.json().catch(() => ({}));
-    throw new Error(errData.error || errData.message || `AI question generation is temporarily unavailable (status ${response.status}). Please try again.`);
-  }
-
-  const { questions } = await response.json();
-  if (!questions || !Array.isArray(questions) || questions.length === 0) {
-    throw new Error('No interview questions were returned by the AI engine.');
-  }
-
-  // 2. Generate unique join code for this AI session
+  // 1. Generate unique join code for this AI session
   const joinCode = 'AI-' + Math.random().toString(36).substring(2, 8).toUpperCase();
 
-  // 3. Insert interview session into Supabase 'interviews'
+  // 2. Insert interview session into Supabase 'interviews'
   const { data: interview, error: interviewError } = await supabase
     .from('interviews')
     .insert({
       candidate_id: candidateId,
       interviewer_id: null,
       candidate_name: candidateName || 'Candidate',
-      interviewer_name: 'MockMate AI (Gemini)',
+      interviewer_name: 'MockMate AI (Alex Vance)',
       interview_type: interviewType,
       difficulty: difficulty,
       duration: duration,
@@ -61,14 +49,14 @@ export async function startAIInterview({
     throw interviewError;
   }
 
-  // 4. Insert generated questions into 'interview_questions'
-  const questionRows = questions.map((q, idx) => ({
+  // 3. Register the 7 structured interview stage questions into 'interview_questions'
+  const questionRows = AI_STAGE_DEFINITIONS.map((stageDef) => ({
     interview_id: interview.id,
-    question_order: q.questionOrder || idx + 1,
-    question_text: q.questionText,
-    question_type: q.questionType || 'conceptual',
-    hints: q.hints || [],
-    expected_topics: q.expectedTopics || [],
+    question_order: stageDef.order,
+    question_text: `[${stageDef.key.toUpperCase()}] ${stageDef.title}`,
+    question_type: stageDef.type,
+    hints: [stageDef.key],
+    expected_topics: [interviewType, stageDef.key],
   }));
 
   const { data: insertedQuestions, error: questionsError } = await supabase
@@ -77,7 +65,7 @@ export async function startAIInterview({
     .select();
 
   if (questionsError) {
-    console.error('[aiInterviewService] Error saving questions to Supabase:', questionsError);
+    console.error('[aiInterviewService] Error saving structured questions to Supabase:', questionsError);
   }
 
   return {
@@ -181,7 +169,7 @@ export async function completeInterviewSession(interviewId) {
 }
 
 /**
- * Send a turn to the conversational AI interviewer
+ * Send a turn to the conversational AI interviewer with authoritative stage, intent, and followUpCount
  */
 export async function sendAITurn({
   stage = 'introduction',
@@ -193,6 +181,8 @@ export async function sendAITurn({
   difficulty = 'Medium',
   codingProblem = null,
   code = '',
+  intent = 'ask_stage_question',
+  followUpCount = 0,
 }) {
   const response = await fetch('/api/questions/ai-turn', {
     method: 'POST',
@@ -207,6 +197,8 @@ export async function sendAITurn({
       difficulty,
       codingProblem,
       code,
+      intent,
+      followUpCount,
     }),
   });
 
