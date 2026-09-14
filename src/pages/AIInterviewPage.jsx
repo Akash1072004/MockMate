@@ -14,6 +14,12 @@ import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
 import CollaborativeCodeEditor from '../components/interview/CollaborativeCodeEditor';
 import LeetCodeQuestionPanel from '../components/interview/LeetCodeQuestionPanel';
 import { CODE_TEMPLATES } from '../utils/codeTemplates';
+import {
+  CURATED_CODING_PROBLEMS,
+  selectCodingProblem,
+  DEFAULT_CODING_PROBLEM,
+  getStarterCodeForProblem
+} from '../utils/codingProblems';
 import { 
   Bot, 
   Sparkles, 
@@ -37,7 +43,8 @@ import {
   Check,
   User,
   MessageSquare,
-  Maximize2
+  Maximize2,
+  HelpCircle
 } from 'lucide-react';
 
 const TRACK_OPTIONS = ['DSA', 'Technical', 'Frontend', 'Backend', 'Full Stack', 'Behavioral'];
@@ -60,7 +67,6 @@ export const STAGES = [
 
 const STAGE_ORDER = ['introduction', 'personal', 'resume_dive', 'technical', 'coding', 'followup', 'evaluation'];
 
-// Stages eligible for 1 intelligent follow-up probe before moving forward
 const FOLLOWUP_ELIGIBLE_STAGES = ['resume_dive', 'technical', 'followup'];
 const MAX_FOLLOWUPS_PER_STAGE = 1;
 
@@ -86,22 +92,72 @@ export default function AIInterviewPage() {
   // Active session conversational state (Authoritative State Machine)
   const [interview, setInterview] = useState(null);
   const [currentStage, setCurrentStage] = useState('introduction');
-  const [messages, setMessages] = useState([]); // [{ role: 'assistant' | 'user', content: string, timestamp: string, stage: string }]
-  const [qaHistory, setQaHistory] = useState([]); // [{ stage, question, answer, codeSnapshot, questionId, followUpTo }]
-  const [stageFollowUpCount, setStageFollowUpCount] = useState(0); // number of followups completed in current stage
-  const [questionsMap, setQuestionsMap] = useState({}); // stageKey -> question_id
+  const [messages, setMessages] = useState([]);
+  const [qaHistory, setQaHistory] = useState([]);
+  const [stageFollowUpCount, setStageFollowUpCount] = useState(0);
+  const [questionsMap, setQuestionsMap] = useState({});
   const [userInput, setUserInput] = useState('');
   const [isAiTyping, setIsAiTyping] = useState(false);
   const [voiceEnabled, setVoiceEnabled] = useState(true);
-  const [inputMode, setInputMode] = useState('speak'); // 'speak' | 'type'
+  const [inputMode, setInputMode] = useState('speak');
 
-  // Coding stage state
-  const [activeCodingProblem, setActiveCodingProblem] = useState(null);
-  const [code, setCode] = useState('');
+  // Coding stage state - single source of truth for problem, language, and code preservation
+  const [activeCodingProblem, setActiveCodingProblem] = useState(DEFAULT_CODING_PROBLEM);
   const [language, setLanguage] = useState('python');
+  const [codeByLanguage, setCodeByLanguage] = useState({
+    python: DEFAULT_CODING_PROBLEM.starter_code.python,
+    cpp: DEFAULT_CODING_PROBLEM.starter_code.cpp,
+    java: DEFAULT_CODING_PROBLEM.starter_code.java,
+    javascript: DEFAULT_CODING_PROBLEM.starter_code.javascript,
+  });
+  const [code, setCode] = useState(DEFAULT_CODING_PROBLEM.starter_code.python);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [completing, setCompleting] = useState(false);
   const [showAiChatInCoding, setShowAiChatInCoding] = useState(true);
+
+  // Resizable coding IDE state (Problem Panel <-> Code Editor divider)
+  const [codingPanelWidth, setCodingPanelWidth] = useState(() => {
+    try {
+      const saved = localStorage.getItem('mockmate_ai_panel_width');
+      const num = Number(saved);
+      return !isNaN(num) && num >= 280 && num <= 850 ? num : 440;
+    } catch (_) {
+      return 440;
+    }
+  });
+  const [isResizingCoding, setIsResizingCoding] = useState(false);
+
+  const handleMouseDownCodingResize = (e) => {
+    e.preventDefault();
+    setIsResizingCoding(true);
+  };
+
+  useEffect(() => {
+    if (!isResizingCoding) return;
+
+    const handleMouseMove = (e) => {
+      const maxW = Math.max(350, window.innerWidth - 480);
+      const newWidth = Math.max(280, Math.min(e.clientX, maxW));
+      setCodingPanelWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingCoding(false);
+      setCodingPanelWidth((w) => {
+        try {
+          localStorage.setItem('mockmate_ai_panel_width', String(w));
+        } catch (_) {}
+        return w;
+      });
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizingCoding]);
 
   // STRICT In-flight and completion guards to avoid race conditions & duplicate API requests
   const inFlightRef = useRef(false);
@@ -113,6 +169,9 @@ export default function AIInterviewPage() {
   const interviewRef = useRef(interview);
   const qaHistoryRef = useRef(qaHistory);
   const codeRef = useRef(code);
+  const languageRef = useRef(language);
+  const codeByLanguageRef = useRef(codeByLanguage);
+  const activeCodingProblemRef = useRef(activeCodingProblem);
 
   useEffect(() => { currentStageRef.current = currentStage; }, [currentStage]);
   useEffect(() => { stageFollowUpCountRef.current = stageFollowUpCount; }, [stageFollowUpCount]);
@@ -120,6 +179,9 @@ export default function AIInterviewPage() {
   useEffect(() => { interviewRef.current = interview; }, [interview]);
   useEffect(() => { qaHistoryRef.current = qaHistory; }, [qaHistory]);
   useEffect(() => { codeRef.current = code; }, [code]);
+  useEffect(() => { languageRef.current = language; }, [language]);
+  useEffect(() => { codeByLanguageRef.current = codeByLanguage; }, [codeByLanguage]);
+  useEffect(() => { activeCodingProblemRef.current = activeCodingProblem; }, [activeCodingProblem]);
 
   // Speech-to-text hook
   const {
@@ -149,6 +211,64 @@ export default function AIInterviewPage() {
       console.warn('[AIInterviewPage] Speech synthesis warning:', e);
     }
   }, [voiceEnabled]);
+
+  // Helper to obtain starter code for a specific language and problem
+  const getStarterCode = useCallback((lang, problem) => {
+    const prob = problem || activeCodingProblemRef.current || DEFAULT_CODING_PROBLEM;
+    return getStarterCodeForProblem(prob, lang) || prob?.starter_code?.[lang] || CODE_TEMPLATES[lang] || '';
+  }, []);
+
+  // Language Change Handler with Code Preservation across switches (Python <-> C++ <-> Java)
+  const handleLanguageChange = useCallback((newLang) => {
+    const currentLang = languageRef.current;
+    const currentEditorCode = codeRef.current;
+
+    // 1. Save current code for previous language
+    const updatedCodeByLang = {
+      ...codeByLanguageRef.current,
+      [currentLang]: currentEditorCode,
+    };
+
+    // 2. Fetch or initialize code for target language
+    const targetCode = updatedCodeByLang[newLang] !== undefined
+      ? updatedCodeByLang[newLang]
+      : getStarterCode(newLang, activeCodingProblemRef.current);
+
+    updatedCodeByLang[newLang] = targetCode;
+
+    // 3. Atomically update state
+    setCodeByLanguage(updatedCodeByLang);
+    setLanguage(newLang);
+    setCode(targetCode);
+
+    languageRef.current = newLang;
+    codeRef.current = targetCode;
+    codeByLanguageRef.current = updatedCodeByLang;
+  }, [getStarterCode]);
+
+  // Reset to default boilerplate for current language
+  const handleResetTemplate = useCallback(() => {
+    const curLang = languageRef.current;
+    const freshStarter = getStarterCode(curLang, activeCodingProblemRef.current);
+
+    setCodeByLanguage((prev) => ({
+      ...prev,
+      [curLang]: freshStarter,
+    }));
+    setCode(freshStarter);
+    codeRef.current = freshStarter;
+  }, [getStarterCode]);
+
+  // Handle editor code edits
+  const handleCodeChange = useCallback((newVal) => {
+    const curLang = languageRef.current;
+    setCode(newVal);
+    codeRef.current = newVal;
+    setCodeByLanguage((prev) => ({
+      ...prev,
+      [curLang]: newVal,
+    }));
+  }, []);
 
   // Save session recovery snapshot to sessionStorage
   const persistSessionSnapshot = useCallback((sessionData) => {
@@ -187,9 +307,25 @@ export default function AIInterviewPage() {
             setMessages(saved.messages || []);
             setQaHistory(saved.qaHistory || []);
             setQuestionsMap(saved.questionsMap || {});
-            setActiveCodingProblem(saved.activeCodingProblem || null);
-            setCode(saved.code || '');
-            setLanguage(saved.language || 'python');
+            
+            const prob = saved.activeCodingProblem || DEFAULT_CODING_PROBLEM;
+            setActiveCodingProblem(prob);
+            activeCodingProblemRef.current = prob;
+
+            const savedLang = saved.language || 'python';
+            setLanguage(savedLang);
+            languageRef.current = savedLang;
+
+            const savedCodeByLang = saved.codeByLanguage || {
+              [savedLang]: saved.code || prob?.starter_code?.[savedLang] || CODE_TEMPLATES[savedLang] || '',
+            };
+            setCodeByLanguage(savedCodeByLang);
+            codeByLanguageRef.current = savedCodeByLang;
+
+            const currentCode = saved.code || savedCodeByLang[savedLang] || prob?.starter_code?.[savedLang] || '';
+            setCode(currentCode);
+            codeRef.current = currentCode;
+
             setInterviewType(saved.interviewType || 'DSA');
             setDifficulty(saved.difficulty || 'Medium');
             setDuration(saved.duration || 30);
@@ -218,9 +354,10 @@ export default function AIInterviewPage() {
             messages: messagesRef.current,
             qaHistory: qaHistoryRef.current,
             questionsMap,
-            activeCodingProblem,
+            activeCodingProblem: activeCodingProblemRef.current,
             code: codeRef.current,
-            language,
+            language: languageRef.current,
+            codeByLanguage: codeByLanguageRef.current,
             interviewType,
             difficulty,
             duration,
@@ -232,7 +369,7 @@ export default function AIInterviewPage() {
       });
     }, 1000);
     return () => clearInterval(timer);
-  }, [inSession, questionsMap, activeCodingProblem, language, interviewType, difficulty, duration, persistSessionSnapshot, user?.id]);
+  }, [inSession, questionsMap, interviewType, difficulty, duration, persistSessionSnapshot, user?.id]);
 
   const remainingSeconds = Math.max(0, duration * 60 - elapsedSeconds);
   const formatTimer = (seconds) => {
@@ -276,6 +413,24 @@ export default function AIInterviewPage() {
       });
       setQuestionsMap(qMap);
 
+      // Select an appropriate coding problem ONCE for this entire interview session
+      const selectedProblem = selectCodingProblem({ difficulty, track: interviewType });
+      setActiveCodingProblem(selectedProblem);
+      activeCodingProblemRef.current = selectedProblem;
+
+      const initialLang = 'python';
+      const initialStarter = getStarterCodeForProblem(selectedProblem, initialLang) || selectedProblem.starter_code?.python || '';
+      setCode(initialStarter);
+      codeRef.current = initialStarter;
+      const initialCodeByLang = {
+        python: selectedProblem.starter_code?.python || '',
+        cpp: selectedProblem.starter_code?.cpp || '',
+        java: selectedProblem.starter_code?.java || '',
+        javascript: selectedProblem.starter_code?.javascript || '',
+      };
+      setCodeByLanguage(initialCodeByLang);
+      codeByLanguageRef.current = initialCodeByLang;
+
       setInterview(newInterview);
       setInSession(true);
       setCurrentStage('introduction');
@@ -313,9 +468,10 @@ export default function AIInterviewPage() {
         messages: [initialMessage],
         qaHistory: [],
         questionsMap: qMap,
-        activeCodingProblem: null,
-        code: '',
-        language,
+        activeCodingProblem: selectedProblem,
+        code: initialStarter,
+        language: initialLang,
+        codeByLanguage: initialCodeByLang,
         interviewType,
         difficulty,
         duration,
@@ -377,6 +533,20 @@ export default function AIInterviewPage() {
       const isEligibleForFollowUp = FOLLOWUP_ELIGIBLE_STAGES.includes(currentStageVal);
       const canDoFollowUp = isEligibleForFollowUp && currentFollowUpCount < MAX_FOLLOWUPS_PER_STAGE;
 
+      // In Coding Stage: check if candidate message indicates inability to solve or request to move on
+      if (currentStageVal === 'coding') {
+        const isSkipIntent = /(can'?t|cannot|unable to|not able to)\s+(solve|figure|code|do|complete)|i'?m stuck|give up|skip (this|the)?\s*(problem|question|coding)|move on|don'?t know how to (solve|approach|do)/i.test(trimmed);
+        if (isSkipIntent) {
+          inFlightRef.current = false;
+          await transitionCodingOut({
+            isSkip: true,
+            skipReason: `Candidate indicated inability to solve: "${trimmed}"`,
+            candidateSpokenText: trimmed,
+          });
+          return;
+        }
+      }
+
       if (currentStageVal === 'introduction') {
         nextStage = 'personal';
         nextFollowUpCount = 0;
@@ -402,7 +572,6 @@ export default function AIInterviewPage() {
           nextFollowUpCount = 0;
         }
       } else if (currentStageVal === 'coding') {
-        // Chatting in sidebar during coding stays strictly in coding phase
         nextStage = 'coding';
         nextFollowUpCount = currentFollowUpCount;
         intent = 'clarify_coding';
@@ -454,7 +623,7 @@ export default function AIInterviewPage() {
         lastUserMessage: trimmed,
         interviewType,
         difficulty,
-        codingProblem: activeCodingProblem,
+        codingProblem: activeCodingProblemRef.current,
         code: codeRef.current,
         intent,
         followUpCount: nextFollowUpCount,
@@ -474,10 +643,19 @@ export default function AIInterviewPage() {
       setStageFollowUpCount(nextFollowUpCount);
       speakText(turn.reply);
 
-      if (turn.codingProblem && !activeCodingProblem) {
+      // Stable Coding Problem Association
+      let effectiveProb = activeCodingProblemRef.current;
+      if (turn.codingProblem && !effectiveProb) {
+        effectiveProb = turn.codingProblem;
         setActiveCodingProblem(turn.codingProblem);
-        const starter = turn.codingProblem.starter_code?.[language] || CODE_TEMPLATES[language] || '';
-        setCode(starter);
+        activeCodingProblemRef.current = turn.codingProblem;
+
+        // Initialize code for current language if empty
+        if (!codeRef.current) {
+          const starter = turn.codingProblem.starter_code?.[languageRef.current] || CODE_TEMPLATES[languageRef.current] || '';
+          setCode(starter);
+          codeRef.current = starter;
+        }
       }
 
       persistSessionSnapshot({
@@ -488,9 +666,10 @@ export default function AIInterviewPage() {
         messages: [...updatedHistory, aiMsg],
         qaHistory: updatedQaHistory,
         questionsMap,
-        activeCodingProblem: turn.codingProblem || activeCodingProblem,
+        activeCodingProblem: effectiveProb,
         code: codeRef.current,
-        language,
+        language: languageRef.current,
+        codeByLanguage: codeByLanguageRef.current,
         interviewType,
         difficulty,
         duration,
@@ -517,11 +696,11 @@ export default function AIInterviewPage() {
   };
 
   /**
-   * Transition out of Coding stage:
-   * Called when candidate finishes writing code and clicks "Submit Solution & Continue to Review"
+   * Unified transition out of Coding stage:
+   * Handles both successful code submissions and candidate skip / "can't solve" actions.
    */
-  const handleCompleteCodingStage = async () => {
-    if (inFlightRef.current || completedRef.current || currentStage !== 'coding') return;
+  const transitionCodingOut = async ({ isSkip = false, skipReason = '', candidateSpokenText = '' } = {}) => {
+    if (inFlightRef.current || completedRef.current || currentStageRef.current !== 'coding') return;
 
     inFlightRef.current = true;
     setIsAiTyping(true);
@@ -529,23 +708,31 @@ export default function AIInterviewPage() {
     try {
       const candidateName = profile?.full_name || user.email?.split('@')[0] || 'Candidate';
       const resumeSummary = candidateResume?.rawText || `Skills: ${(profile?.skills || []).join(', ')}`;
+      const currentProb = activeCodingProblemRef.current || DEFAULT_CODING_PROBLEM;
+
+      const outcome = isSkip ? 'skipped' : 'submitted';
+      const answerText = isSkip
+        ? `[SKIPPED] ${skipReason || 'Candidate indicated they were unable to solve this problem and requested to move forward.'}`
+        : `Completed coding solution submitted in ${languageRef.current.toUpperCase()}.`;
 
       const codingQuestionId = questionsMap['coding'];
       if (interviewRef.current?.id && codingQuestionId) {
         await saveCandidateAnswer({
           interviewId: interviewRef.current.id,
           questionId: codingQuestionId,
-          candidateAnswer: 'Completed coding solution submitted via Monaco Editor.',
-          codeSnapshot: codeRef.current,
+          candidateAnswer: answerText,
+          codeSnapshot: codeRef.current || '',
         });
       }
 
       const codingQa = {
         stage: 'coding',
-        question: activeCodingProblem ? activeCodingProblem.title : 'Live Coding Challenge',
-        answer: 'Completed coding solution submitted in Monaco editor.',
-        codeSnapshot: codeRef.current,
+        question: currentProb ? `${currentProb.title} (${currentProb.topic})` : 'Live Coding Challenge',
+        answer: answerText,
+        codeSnapshot: codeRef.current || '',
+        language: languageRef.current,
         questionId: codingQuestionId,
+        codingOutcome: outcome,
       };
       const updatedQa = [...qaHistoryRef.current, codingQa];
       setQaHistory(updatedQa);
@@ -556,7 +743,9 @@ export default function AIInterviewPage() {
 
       const userNote = {
         role: 'user',
-        content: '[Submitted coding solution for review]',
+        content: isSkip
+          ? `[Skipped coding problem: "${currentProb.title}"] ${candidateSpokenText ? `Candidate: "${candidateSpokenText}"` : ''}`
+          : `[Submitted ${languageRef.current.toUpperCase()} coding solution for "${currentProb.title}"]`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         stage: nextStage,
       };
@@ -569,12 +758,14 @@ export default function AIInterviewPage() {
         candidateName,
         resumeText: resumeSummary,
         history: updatedHistory,
-        lastUserMessage: 'I have finished my code solution and submitted it for review.',
+        lastUserMessage: isSkip
+          ? (candidateSpokenText || "I wasn't able to complete the code for this problem. Let's move on to discuss the approach or other questions.")
+          : `I have completed my ${languageRef.current} code solution and submitted it for review.`,
         interviewType,
         difficulty,
-        codingProblem: activeCodingProblem,
-        code: codeRef.current,
-        intent: 'ask_stage_question',
+        codingProblem: currentProb,
+        code: codeRef.current || '',
+        intent: isSkip ? 'skip_coding' : 'ask_stage_question',
         followUpCount: 0,
       });
 
@@ -598,14 +789,16 @@ export default function AIInterviewPage() {
         messages: [...updatedHistory, aiMsg],
         qaHistory: updatedQa,
         questionsMap,
-        activeCodingProblem,
+        activeCodingProblem: currentProb,
         code: codeRef.current,
-        language,
+        language: languageRef.current,
+        codeByLanguage: codeByLanguageRef.current,
         interviewType,
         difficulty,
         duration,
         elapsedSeconds,
         completed: false,
+        codingOutcome: outcome,
       });
     } catch (err) {
       console.error('[AIInterviewPage] Coding transition error:', err);
@@ -613,6 +806,29 @@ export default function AIInterviewPage() {
       inFlightRef.current = false;
       setIsAiTyping(false);
     }
+  };
+
+  /**
+   * Candidate completes coding and clicks "Submit Solution & Continue to Review"
+   */
+  const handleCompleteCodingStage = async () => {
+    await transitionCodingOut({ isSkip: false });
+  };
+
+  /**
+   * Candidate cannot solve and clicks "I Can't Solve This" skip button
+   */
+  const handleSkipCodingStage = async () => {
+    if (inFlightRef.current || completedRef.current || currentStage !== 'coding') return;
+    const confirmed = window.confirm(
+      "Are you sure you want to move on? This problem will be recorded as skipped, and you will proceed to complexity & conceptual questions."
+    );
+    if (!confirmed) return;
+
+    await transitionCodingOut({
+      isSkip: true,
+      skipReason: 'Candidate chose to skip via "I Can\'t Solve This" button.',
+    });
   };
 
   // Complete session & evaluate
@@ -1051,42 +1267,59 @@ export default function AIInterviewPage() {
         {/* LEFT / CENTER VIEW */}
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
           
-          {/* STAGE 5: CODING SPLIT VIEW (Monaco + Problem Panel) */}
+          {/* STAGE 5: CODING SPLIT VIEW (Resizable: Problem Panel + Drag Divider + Monaco IDE) */}
           {currentStage === 'coding' ? (
-            <div style={{ flex: 1, display: 'grid', gridTemplateColumns: '40% 60%', height: '100%', overflow: 'hidden' }}>
+            <div style={{ 
+              flex: 1, 
+              display: 'grid', 
+              gridTemplateColumns: `${codingPanelWidth}px 6px 1fr`, 
+              height: '100%', 
+              overflow: 'hidden',
+              userSelect: isResizingCoding ? 'none' : 'auto',
+            }}>
               {/* Problem Description Panel */}
-              <div style={{ height: '100%', overflowY: 'auto', borderRight: '1px solid var(--border-subtle)' }}>
-                {activeCodingProblem ? (
-                  <LeetCodeQuestionPanel
-                    question={activeCodingProblem}
-                    currentLanguage={language}
-                    onLanguageChange={(l) => {
-                      setLanguage(l);
-                      if (activeCodingProblem?.starter_code?.[l]) {
-                        setCode(activeCodingProblem.starter_code[l]);
-                      }
-                    }}
-                  />
-                ) : (
-                  <div style={{ padding: '2rem', color: 'var(--text-secondary)' }}>
-                    Loading coding challenge...
-                  </div>
-                )}
+              <div style={{ height: '100%', overflowY: 'auto', borderRight: '1px solid var(--border-subtle)', background: '#0d1321' }}>
+                <LeetCodeQuestionPanel
+                  question={activeCodingProblem || DEFAULT_CODING_PROBLEM}
+                  activeQuestion={activeCodingProblem || DEFAULT_CODING_PROBLEM}
+                  questions={[activeCodingProblem || DEFAULT_CODING_PROBLEM]}
+                />
               </div>
 
-              {/* Monaco Code Editor */}
-              <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+              {/* Draggable Vertical Resizing Divider */}
+              <div
+                onMouseDown={handleMouseDownCodingResize}
+                title="Drag to resize Problem Panel and Code Editor"
+                style={{
+                  width: '6px',
+                  cursor: 'col-resize',
+                  background: isResizingCoding ? '#6366f1' : 'rgba(255, 255, 255, 0.08)',
+                  zIndex: 10,
+                  transition: isResizingCoding ? 'none' : 'background 0.2s',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                <div style={{ width: '2px', height: '32px', background: isResizingCoding ? '#a5b4fc' : 'rgba(255, 255, 255, 0.25)', borderRadius: '1px' }} />
+              </div>
+
+              {/* Monaco Code Editor with Language Selector, Reset & Submit/Skip Action Buttons */}
+              <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
                 <div style={{ flex: 1, minHeight: 0 }}>
                   <CollaborativeCodeEditor
-                    roomId={interview?.id || 'mock-ai-room'}
-                    initialCode={code}
+                    code={code}
                     language={language}
-                    onChange={(newCode) => setCode(newCode)}
-                    isReadOnly={false}
+                    onCodeChange={handleCodeChange}
+                    onLanguageChange={handleLanguageChange}
+                    onResetTemplate={handleResetTemplate}
+                    interviewId={interview?.id || 'mock-ai-room'}
+                    questionId={activeCodingProblem?.id || 'two-sum'}
+                    readOnly={false}
                   />
                 </div>
                 
-                {/* Submit Solution Bar */}
+                {/* Submit Solution & Skip Bar */}
                 <div style={{
                   padding: '0.75rem 1.25rem',
                   background: '#0d111b',
@@ -1094,19 +1327,43 @@ export default function AIInterviewPage() {
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
+                  gap: '1rem',
+                  flexWrap: 'wrap',
                 }}>
                   <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                    Ask questions in the sidebar or submit your code to advance to complexity analysis.
+                    Language: <span style={{ color: '#38bdf8', fontWeight: 600 }}>{language.toUpperCase()}</span> • Ask questions in the sidebar or submit your code to continue.
                   </div>
-                  <button
-                    onClick={handleCompleteCodingStage}
-                    disabled={isAiTyping || inFlightRef.current}
-                    className="btn btn-primary btn-sm"
-                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
-                  >
-                    <CheckCircle2 size={16} />
-                    <span>Submit Solution & Continue to Review</span>
-                  </button>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                    <button
+                      type="button"
+                      onClick={handleSkipCodingStage}
+                      disabled={isAiTyping || inFlightRef.current}
+                      className="btn btn-outline-danger btn-sm"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.4rem',
+                        borderColor: 'rgba(239, 68, 68, 0.4)',
+                        color: '#f87171',
+                        background: 'rgba(239, 68, 68, 0.05)',
+                        cursor: isAiTyping || inFlightRef.current ? 'not-allowed' : 'pointer',
+                      }}
+                      title="Skip this coding problem if you are stuck or unable to solve it"
+                    >
+                      <HelpCircle size={15} />
+                      <span>I Can't Solve This</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCompleteCodingStage}
+                      disabled={isAiTyping || inFlightRef.current}
+                      className="btn btn-primary btn-sm"
+                      style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+                    >
+                      <CheckCircle2 size={16} />
+                      <span>Submit Solution & Continue to Review</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>

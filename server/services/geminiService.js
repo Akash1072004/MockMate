@@ -136,51 +136,8 @@ const FALLBACK_QUESTIONS = {
   },
 };
 
-/**
- * Curated coding problems
- */
-export const CURATED_CODING_PROBLEMS = [
-  {
-    id: 'two-sum',
-    title: 'Two Sum',
-    difficulty: 'Easy',
-    topic: 'Hash Tables & Arrays',
-    description: 'Given an array of integers `nums` and an integer `target`, return indices of the two numbers such that they add up to `target`.\n\nYou may assume that each input would have exactly one solution, and you may not use the same element twice.\n\nYou can return the answer in any order.',
-    input_format: 'nums = [2,7,11,15], target = 9',
-    output_format: '[0,1]',
-    constraints: '2 <= nums.length <= 10^4\n-10^9 <= nums[i] <= 10^9\n-10^9 <= target <= 10^9\nOnly one valid answer exists.',
-    examples: [
-      { input: 'nums = [2,7,11,15], target = 9', output: '[0,1]', explanation: 'Because nums[0] + nums[1] == 9, we return [0, 1].' },
-      { input: 'nums = [3,2,4], target = 6', output: '[1,2]', explanation: 'nums[1] + nums[2] == 6.' }
-    ],
-    starter_code: {
-      python: 'def twoSum(nums: list[int], target: int) -> list[int]:\n    # Write your solution here\n    pass',
-      javascript: 'function twoSum(nums, target) {\n    // Write your solution here\n}',
-      cpp: '#include <vector>\n#include <unordered_map>\nusing namespace std;\n\nclass Solution {\npublic:\n    vector<int> twoSum(vector<int>& nums, int target) {\n        // Write your solution here\n        return {};\n    }\n};',
-      java: 'import java.util.HashMap;\n\nclass Solution {\n    public int[] twoSum(int[] nums, int target) {\n        // Write your solution here\n        return new int[]{};\n    }\n}'
-    }
-  },
-  {
-    id: 'valid-palindrome',
-    title: 'Valid Palindrome',
-    difficulty: 'Easy',
-    topic: 'Two Pointers & Strings',
-    description: 'A phrase is a palindrome if, after converting all uppercase letters into lowercase letters and removing all non-alphanumeric characters, it reads the same forward and backward.',
-    input_format: 's = "A man, a plan, a canal: Panama"',
-    output_format: 'true',
-    constraints: '1 <= s.length <= 2 * 10^5\ns consists only of printable ASCII characters.',
-    examples: [
-      { input: 's = "A man, a plan, a canal: Panama"', output: 'true', explanation: '"amanaplanacanalpanama" is a palindrome.' },
-      { input: 's = "race a car"', output: 'false', explanation: '"raceacar" is not a palindrome.' }
-    ],
-    starter_code: {
-      python: 'def isPalindrome(s: str) -> bool:\n    # Write your solution here\n    pass',
-      javascript: 'function isPalindrome(s) {\n    // Write your solution here\n}',
-      cpp: '#include <string>\nusing namespace std;\n\nclass Solution {\npublic:\n    bool isPalindrome(string s) {\n        // Write your solution here\n        return false;\n    }\n};',
-      java: 'class Solution {\n    public boolean isPalindrome(String s) {\n        // Write your solution here\n        return false;\n    }\n}'
-    }
-  }
-];
+import { CURATED_CODING_PROBLEMS, selectCodingProblem, DEFAULT_CODING_PROBLEM } from '../../src/utils/codingProblems.js';
+export { CURATED_CODING_PROBLEMS, selectCodingProblem, DEFAULT_CODING_PROBLEM };
 
 /**
  * Generates interview questions for a mock interview session
@@ -252,7 +209,7 @@ function classifyCandidateAnswer(text) {
   if (!text || typeof text !== 'string') return 'dont_know';
   const clean = text.trim().toLowerCase();
 
-  // "Don't know" or refusal
+  // "Don't know", inability to solve, or refusal
   if (
     clean === "i don't know" ||
     clean === "dont know" ||
@@ -260,7 +217,8 @@ function classifyCandidateAnswer(text) {
     clean === "i do not know" ||
     clean === "pass" ||
     clean === "skip" ||
-    clean.length < 5
+    clean.length < 5 ||
+    /(can'?t|cannot|unable to|not able to)\s+(solve|figure|code|do|complete)|i'?m stuck|give up|skip (this|the)?\s*(problem|question|coding)|move on|don'?t know how to (solve|approach|do)/i.test(clean)
   ) {
     return 'dont_know';
   }
@@ -344,10 +302,10 @@ Return ONLY a JSON object with this structure:
   }
 
   // Realistic Adaptive Heuristic Fallback
-  if (candidateStatus === 'dont_know') {
-    if (stage === 'coding') {
+  if (candidateStatus === 'dont_know' || intent === 'skip_coding') {
+    if (stage === 'coding' || intent === 'skip_coding') {
       return {
-        reply: `No worries! Take a step back and examine the example inputs. What would be the simplest brute-force approach you could write first, even if it uses nested loops?`,
+        reply: `That's completely okay! Algorithmic problems under time constraints are tough. Let's move on and discuss the general approach, time complexity, and data structures you considered.`,
         stage,
         codingProblem: activeCodingProb,
         answerAssessment: 'dont_know',
@@ -437,7 +395,12 @@ function evaluateAnswersStrictHeuristic({
     let feedback = '';
     let optimalApproach = 'Demonstrate clear domain reasoning, analyze edge cases, and state time/space complexity.';
 
-    if (!ans || ans === '(No text answer provided)' || ans.length < 5) {
+    const isSkippedCoding = (q.stage === 'coding' && (q.codingOutcome === 'skipped' || ansLower.includes('[skipped]') || ansLower.includes('unable to solve') || ansLower.includes('cannot solve') || ansLower.includes('could not solve')));
+    if (isSkippedCoding) {
+      score = 1.0;
+      feedback = 'Candidate could not solve or skipped the live coding problem. Minimal technical credit awarded.';
+      optimalApproach = 'Break the problem down into brute force first, then optimize with appropriate data structures.';
+    } else if (!ans || ans === '(No text answer provided)' || ans.length < 5) {
       score = 1.0;
       feedback = 'No substantive answer was provided by the candidate for this stage.';
     } else if (
@@ -473,8 +436,11 @@ function evaluateAnswersStrictHeuristic({
   });
 
   // Code evaluation
+  const hasSkippedCoding = qaSummary.some(q => q.stage === 'coding' && (q.codingOutcome === 'skipped' || (q.candidateAnswer && (q.candidateAnswer.includes('[SKIPPED]') || q.candidateAnswer.toLowerCase().includes('unable to solve')))));
   let codeScore = 4.0;
-  if (codeSnapshot && codeSnapshot.length > 30) {
+  if (hasSkippedCoding) {
+    codeScore = 1.5; // Minimal credit for skipping coding
+  } else if (codeSnapshot && codeSnapshot.length > 30) {
     if (codeSnapshot.includes('for ') && codeSnapshot.includes('range(')) {
       const loopCount = (codeSnapshot.match(/for /g) || []).length;
       if (loopCount >= 2) {
@@ -601,8 +567,9 @@ RUBRIC GUIDELINES (0.0 to 10.0 scale):
 STRICT EVIDENCE RULES:
 1. Ground every single score strictly on the actual questions and candidate answers provided below.
 2. DO NOT FLATTER OR ASSUME KNOWLEDGE: If the candidate gave an incorrect answer, says "I don't know", or gave an empty response, you MUST assign a low score (0 to 3.5) for that question. NEVER award high scores for non-existent or wrong answers.
-3. If the candidate used an O(n^2) brute force solution when an O(n) hash table solution is standard, penalize complexityAnalysis appropriately.
-4. Calculate overallScore as the true weighted average of the individual question scores and code quality. Do not inflate.
+3. CRITICAL FOR CODING STAGE: If the candidate skipped or indicated inability to solve the live coding stage (marked as [SKIPPED] or codingOutcome: "skipped"), you MUST award a score between 0.0 and 2.0 for coding and problem-solving. Do NOT award coding credit for a skipped problem.
+4. If the candidate used an O(n^2) brute force solution when an O(n) hash table solution is standard, penalize complexityAnalysis appropriately.
+5. Calculate overallScore as the true weighted average of the individual question scores and code quality. Do not inflate.
 
 Interview Details:
 - Candidate Name: ${candidateName}

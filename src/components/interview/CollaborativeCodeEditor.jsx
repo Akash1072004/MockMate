@@ -32,6 +32,7 @@ export default function CollaborativeCodeEditor({
   onRunSuccess = null,
 }) {
   const editorRef = useRef(null);
+  const monacoInstanceRef = useRef(null);
   const isLocalChangeRef = useRef(false);
   const isApplyingRemoteRef = useRef(false);
   const prevQuestionIdRef = useRef(questionId);
@@ -65,6 +66,21 @@ export default function CollaborativeCodeEditor({
         return 'python';
     }
   };
+
+  
+  // Ensure Monaco editor model language updates when language prop changes
+  useEffect(() => {
+    if (!editorRef.current || !monacoInstanceRef.current) return;
+    const model = editorRef.current.getModel();
+    if (!model) return;
+
+    const targetMonacoLang = getMonacoLanguage(language);
+    try {
+      monacoInstanceRef.current.editor.setModelLanguage(model, targetMonacoLang);
+    } catch (e) {
+      console.warn('[CollaborativeCodeEditor] Error setting model language:', e);
+    }
+  }, [language]);
 
   // Synchronize remote code updates to Monaco model smoothly without cursor jumping or model destruction
   useEffect(() => {
@@ -154,6 +170,7 @@ export default function CollaborativeCodeEditor({
   // Monaco Editor mount handler
   const handleEditorMount = (editor, monaco) => {
     editorRef.current = editor;
+    monacoInstanceRef.current = monaco;
 
     if (code && editor.getValue() !== code) {
       editor.setValue(code);
