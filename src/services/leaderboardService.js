@@ -1,16 +1,32 @@
-import { supabase, isSupabaseConfigured } from '../lib/supabase';
+import { supabase, isSupabaseConfigured } from '../lib/supabase.js';
+import { getApiBaseUrl } from '../utils/apiConfig.js';
 
 /**
- * Service for querying live candidate rankings from Supabase.
- * Strictly queries database records with zero fake/mock users.
+ * Service for querying live candidate rankings.
+ * 1. Authoritative calculated backend /api/interviews/leaderboard preserving full score precision.
+ * 2. Fallback to Supabase candidate_leaderboard view and RPC.
  */
 export async function getLeaderboard() {
+  // 1. Primary: Authoritative calculated backend endpoint
+  try {
+    const apiBase = getApiBaseUrl();
+    const res = await fetch(`${apiBase}/interviews/leaderboard`);
+    if (res.ok) {
+      const json = await res.json();
+      if (Array.isArray(json?.leaderboard)) {
+        return { data: json.leaderboard, error: null };
+      }
+    }
+  } catch (apiErr) {
+    console.warn('[leaderboardService] Backend /leaderboard fetch note:', apiErr.message);
+  }
+
   if (!isSupabaseConfigured || !supabase) {
     return { data: [], error: null };
   }
 
+  // 2. Fallback: Query the canonical candidate_leaderboard view or RPC
   try {
-    // 1. Query the canonical candidate_leaderboard view
     let leaderboardRows = null;
     const { data: viewData, error: viewError } = await supabase
       .from('candidate_leaderboard')
@@ -20,7 +36,6 @@ export async function getLeaderboard() {
     if (!viewError && Array.isArray(viewData) && viewData.length > 0) {
       leaderboardRows = viewData;
     } else {
-      // 2. Fallback to the secure get_candidate_leaderboard RPC
       const { data: rpcData, error: rpcError } = await supabase.rpc('get_candidate_leaderboard');
       if (!rpcError && Array.isArray(rpcData) && rpcData.length > 0) {
         leaderboardRows = rpcData;

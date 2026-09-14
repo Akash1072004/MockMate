@@ -87,4 +87,112 @@ router.get('/live-sessions', async (req, res) => {
   }
 });
 
+/**
+ * GET /api/interviews/leaderboard
+ * Computes live, authoritative candidate rankings and average scores
+ * strictly from completed interviews with valid evaluations in the database.
+ * Preserves decimal precision (e.g. 8.23/10) and assigns dense ranks.
+ */
+router.get('/leaderboard', async (req, res) => {
+  try {
+    if (!supabase) {
+      return res.status(503).json({ error: 'Database service unavailable' });
+    }
+
+    // 1. Fetch ALL completed interviews with valid score or evaluation (no arbitrary row limit)
+    const { data: interviews, error: intErr } = await supabase
+      .from('interviews')
+      .select('id, candidate_id, status, score, evaluation, created_at')
+      .eq('status', 'completed')
+      .range(0, 99999);
+
+    if (intErr) {
+      console.error('[API /leaderboard] Error querying interviews:', intErr);
+      return res.status(500).json({ error: intErr.message });
+    }
+
+    // 2. Fetch candidate profiles (no arbitrary row limit)
+    const { data: profiles, error: profErr } = await supabase
+      .from('profiles')
+      .select('id, full_name, username, headline, skills, github, linkedin, role')
+      .eq('role', 'candidate')
+      .range(0, 99999);
+
+    if (profErr) {
+      console.error('[API /leaderboard] Error querying profiles:', profErr);
+      return res.status(500).json({ error: profErr.message });
+    }
+
+    // 3. Aggregate ALL valid completed scores strictly per candidate
+    // Each candidate's average is computed across ALL valid completed interviews given by that candidate.
+    // There is NO limit (no 15-interview limit, no latest-only, no first-only).
+    const scoresByCandidate = {};
+    for (const inv of (interviews || [])) {
+      if (inv.status !== 'completed') continue;
+
+      let rawScore = null;
+      if (inv.score !== null && inv.score !== undefined && !isNaN(Number(inv.score))) {
+        rawScore = Number(inv.score);
+      } else if (inv.evaluation) {
+        try {
+          const evalObj = typeof inv.evaluation === 'string' ? JSON.parse(inv.evaluation) : inv.evaluation;
+          const candidateScore = evalObj?.overallScore ?? evalObj?.overall_score ?? evalObj?.score;
+          if (candidateScore !== null && candidateScore !== undefined && !isNaN(Number(candidateScore))) {
+            rawScore = Number(candidateScore);
+          }
+        } catch (e) {
+          // ignore parse error
+        }
+      }
+
+      if (rawScore !== null && !isNaN(rawScore)) {
+        if (!scoresByCandidate[inv.candidate_id]) {
+          scoresByCandidate[inv.candidate_id] = [];
+        }
+        scoresByCandidate[inv.candidate_id].push(Number(rawScore));
+      }
+    }
+
+    // 4. Build leaderboard records: exactly ONE record per candidate with real completed interviews
+    const leaderboard = [];
+    for (const profile of (profiles || [])) {
+      const scores = scoresByCandidate[profile.id] || [];
+      if (scores.length === 0) continue; // Unranked if 0 valid completed interviews
+
+      const sum = scores.reduce((a, b) => a + b, 0);
+      const rawAvg = sum / scores.length; // Exact average across ALL interviews given by candidate
+      const formattedScore = parseFloat(rawAvg.toFixed(2));
+
+      leaderboard.push({
+        candidate_id: profile.id,
+        candidate_name: profile.full_name || 'Candidate',
+        username: profile.username || null,
+        headline: profile.headline || null,
+        skills: profile.skills || [],
+        github: profile.github || null,
+        linkedin: profile.linkedin || null,
+        interview_count: scores.length, // Real count of ALL valid completed interviews
+        average_score: formattedScore,
+        raw_average: rawAvg,
+      });
+    }
+
+    // 5. Rank candidates strictly by their calculated all-interview raw_average DESC
+    leaderboard.sort((a, b) => {
+      if (b.raw_average !== a.raw_average) return b.raw_average - a.raw_average;
+      return b.interview_count - a.interview_count;
+    });
+
+    // 6. Assign dense ranks
+    leaderboard.forEach((c, idx) => {
+      c.rank = idx + 1;
+    });
+
+    return res.json({ leaderboard });
+  } catch (err) {
+    console.error('[API /leaderboard] Server error:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

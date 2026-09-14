@@ -7,9 +7,9 @@ import { GoogleGenAI } from '@google/genai';
  * Tertiary fallback: gemini-2.5-flash
  */
 const CANDIDATE_MODELS = [
-  'gemini-3.1-flash-lite',
   'gemini-3.5-flash-lite',
   'gemini-2.5-flash',
+  'gemini-3.1-flash-lite',
 ];
 
 async function callGeminiCascade(apiKey, prompt, config = {}) {
@@ -22,14 +22,21 @@ async function callGeminiCascade(apiKey, prompt, config = {}) {
 
   for (const model of CANDIDATE_MODELS) {
     try {
-      const response = await ai.models.generateContent({
-        model,
-        contents: prompt,
-        config: {
-          temperature: 0.2,
-          ...config,
-        },
-      });
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error(`Gemini model ${model} timed out after 12s`)), 12000)
+      );
+
+      const response = await Promise.race([
+        ai.models.generateContent({
+          model,
+          contents: prompt,
+          config: {
+            temperature: 0.2,
+            ...config,
+          },
+        }),
+        timeoutPromise,
+      ]);
 
       if (response && response.text) {
         return { text: response.text, model };

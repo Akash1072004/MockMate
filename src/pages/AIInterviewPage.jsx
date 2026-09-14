@@ -6,7 +6,10 @@ import {
   saveCandidateAnswer, 
   completeInterviewSession, 
   sendAITurn,
-  AI_STAGE_DEFINITIONS
+  AI_STAGE_DEFINITIONS,
+  getActiveAIInterview,
+  getAIInterviewById,
+  archiveCandidateActiveAIInterviews
 } from '../services/aiInterviewService';
 import { requestEvaluation } from '../services/evaluationService';
 import { getCandidateResume, hasResume } from '../services/resumeService';
@@ -120,7 +123,7 @@ export default function AIInterviewPage() {
     try {
       const saved = localStorage.getItem('mockmate_ai_panel_width');
       const num = Number(saved);
-      return !isNaN(num) && num >= 280 && num <= 850 ? num : 440;
+      return !isNaN(num) && num >= 260 && num <= 850 ? num : 380;
     } catch (_) {
       return 440;
     }
@@ -172,6 +175,14 @@ export default function AIInterviewPage() {
   const languageRef = useRef(language);
   const codeByLanguageRef = useRef(codeByLanguage);
   const activeCodingProblemRef = useRef(activeCodingProblem);
+
+  // Authoritative Finish & Exit Controls
+  const [showFinishModal, setShowFinishModal] = useState(false);
+  const [showExitModal, setShowExitModal] = useState(false);
+  const [finishingStep, setFinishingStep] = useState(''); // 'saving' | 'preparing' | 'evaluating' | 'finalizing' | 'complete'
+  const finishInFlightRef = useRef(false);
+  const hasSubmittedCodeRef = useRef(false);
+  const hasSkippedCodeRef = useRef(false);
 
   useEffect(() => { currentStageRef.current = currentStage; }, [currentStage]);
   useEffect(() => { stageFollowUpCountRef.current = stageFollowUpCount; }, [stageFollowUpCount]);
@@ -283,61 +294,135 @@ export default function AIInterviewPage() {
     }
   }, []);
 
-  // Check resume pre-flight requirement on mount & attempt session restoration
+  // Check resume pre-flight requirement on mount & attempt authoritative session restoration
   useEffect(() => {
+    let isMounted = true;
     if (user?.id) {
       hasResume(user.id)
         .then((ok) => {
-          setHasCandidateResume(ok);
-          if (ok) {
-            getCandidateResume(user.id).then((res) => setCandidateResume(res));
+          if (isMounted) {
+            setHasCandidateResume(ok);
+            if (ok) {
+              getCandidateResume(user.id).then((res) => {
+                if (isMounted) setCandidateResume(res);
+              });
+            }
           }
         })
-        .finally(() => setCheckingResume(false));
+        .finally(() => {
+          if (isMounted) setCheckingResume(false);
+        });
 
-      // Attempt to recover existing active session if user accidentally refreshed
-      try {
-        const raw = sessionStorage.getItem(SESSION_STORAGE_KEY);
-        if (raw) {
-          const saved = JSON.parse(raw);
-          if (saved?.interview?.id && saved.userId === user.id && !saved.completed) {
-            setInterview(saved.interview);
-            setCurrentStage(saved.currentStage || 'introduction');
-            setStageFollowUpCount(saved.stageFollowUpCount || 0);
-            setMessages(saved.messages || []);
-            setQaHistory(saved.qaHistory || []);
-            setQuestionsMap(saved.questionsMap || {});
-            
-            const prob = saved.activeCodingProblem || DEFAULT_CODING_PROBLEM;
-            setActiveCodingProblem(prob);
-            activeCodingProblemRef.current = prob;
+      // Authoritative Session Recovery:
+      const checkAndRestore = async () => {
+        try {
+          const raw = sessionStorage.getItem(SESSION_STORAGE_KEY);
+          let saved = null;
+          if (raw) {
+            try { saved = JSON.parse(raw); } catch (e) {}
+          }
 
-            const savedLang = saved.language || 'python';
-            setLanguage(savedLang);
-            languageRef.current = savedLang;
+          let authoritativeInterview = null;
 
-            const savedCodeByLang = saved.codeByLanguage || {
-              [savedLang]: saved.code || prob?.starter_code?.[savedLang] || CODE_TEMPLATES[savedLang] || '',
-            };
-            setCodeByLanguage(savedCodeByLang);
-            codeByLanguageRef.current = savedCodeByLang;
+          // 1. Check if saved session in sessionStorage matches an interview in DB
+          if (saved?.interview?.id && saved.userId === user.id) {
+            authoritativeInterview = await getAIInterviewById(saved.interview.id);
+          }
 
-            const currentCode = saved.code || savedCodeByLang[savedLang] || prob?.starter_code?.[savedLang] || '';
-            setCode(currentCode);
-            codeRef.current = currentCode;
+          // 2. If no saved session in storage, check DB for an active AI interview for user
+          if (!authoritativeInterview) {
+            authoritativeInterview = await getActiveAIInterview(user.id);
+          }
 
-            setInterviewType(saved.interviewType || 'DSA');
-            setDifficulty(saved.difficulty || 'Medium');
-            setDuration(saved.duration || 30);
-            setElapsedSeconds(saved.elapsedSeconds || 0);
+          if (!authoritativeInterview || !isMounted) return;
+
+          // 3. Database state takes precedence: If DB status is completed, never resurrect as active!
+          if (authoritativeInterview.status === 'completed') {
+            sessionStorage.removeItem(SESSION_STORAGE_KEY);
+            navigate(`/interview/results/${authoritativeInterview.id}`);
+            return;
+          }
+
+          // 4. If DB status is active, restore active session safely
+          if (authoritativeInterview.status === 'active') {
+            setInterview(authoritativeInterview);
+            interviewRef.current = authoritativeInterview;
+
+            if (saved && saved.interview?.id === authoritativeInterview.id && !saved.completed) {
+              setCurrentStage(saved.currentStage || 'introduction');
+              currentStageRef.current = saved.currentStage || 'introduction';
+              setStageFollowUpCount(saved.stageFollowUpCount || 0);
+              stageFollowUpCountRef.current = saved.stageFollowUpCount || 0;
+              setMessages(saved.messages || []);
+              messagesRef.current = saved.messages || [];
+              setQaHistory(saved.qaHistory || []);
+              qaHistoryRef.current = saved.qaHistory || [];
+              setQuestionsMap(saved.questionsMap || {});
+
+              const prob = saved.activeCodingProblem || DEFAULT_CODING_PROBLEM;
+              setActiveCodingProblem(prob);
+              activeCodingProblemRef.current = prob;
+
+              const savedLang = saved.language || 'python';
+              setLanguage(savedLang);
+              languageRef.current = savedLang;
+
+              const savedCodeByLang = saved.codeByLanguage || {
+                [savedLang]: saved.code || prob?.starter_code?.[savedLang] || CODE_TEMPLATES[savedLang] || '',
+              };
+              setCodeByLanguage(savedCodeByLang);
+              codeByLanguageRef.current = savedCodeByLang;
+
+              const currentCode = saved.code || savedCodeByLang[savedLang] || prob?.starter_code?.[savedLang] || '';
+              setCode(currentCode);
+              codeRef.current = currentCode;
+
+              setInterviewType(saved.interviewType || authoritativeInterview.interview_type || 'DSA');
+              setDifficulty(saved.difficulty || authoritativeInterview.difficulty || 'Medium');
+              setDuration(saved.duration || authoritativeInterview.duration || 30);
+              setElapsedSeconds(saved.elapsedSeconds || 0);
+
+              if (saved.codingOutcome === 'submitted') hasSubmittedCodeRef.current = true;
+              if (saved.codingOutcome === 'skipped') hasSkippedCodeRef.current = true;
+            } else {
+              setInterviewType(authoritativeInterview.interview_type || 'DSA');
+              setDifficulty(authoritativeInterview.difficulty || 'Medium');
+              setDuration(authoritativeInterview.duration || 30);
+              setCurrentStage('introduction');
+              const prob = selectCodingProblem({ difficulty: authoritativeInterview.difficulty, track: authoritativeInterview.interview_type });
+              setActiveCodingProblem(prob);
+              activeCodingProblemRef.current = prob;
+            }
+
             setInSession(true);
           }
+        } catch (err) {
+          console.warn('[AIInterviewPage] Session recovery check failed:', err);
         }
-      } catch (e) {
-        console.warn('[AIInterviewPage] Error restoring session:', e);
-      }
+      };
+
+      checkAndRestore();
     }
-  }, [user?.id]);
+
+    return () => {
+      isMounted = false;
+    };
+  }, [user?.id, navigate]);
+
+  // Warn candidate on unexpected window close/refresh while interview is actively running
+  useEffect(() => {
+    if (!inSession) return;
+    const handleBeforeUnload = (e) => {
+      if (completedRef.current) return;
+      e.preventDefault();
+      e.returnValue = 'Your AI interview is still in progress. Are you sure you want to leave?';
+      return e.returnValue;
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, [inSession]);
 
   // Timer: isolated from phase state machine
   useEffect(() => {
@@ -389,10 +474,15 @@ export default function AIInterviewPage() {
     }
 
     inFlightRef.current = true;
+    finishInFlightRef.current = false;
+    hasSubmittedCodeRef.current = false;
+    hasSkippedCodeRef.current = false;
     setStarting(true);
     setSetupError('');
 
     try {
+      // Archive any lingering active AI interviews for this candidate before starting
+      await archiveCandidateActiveAIInterviews(user.id);
       const candidateName = profile?.full_name || user.email?.split('@')[0] || 'Candidate';
       const resumeSummary = candidateResume?.rawText || `Skills: ${(profile?.skills || []).join(', ')}. Bio: ${profile?.bio || ''}`;
 
@@ -725,6 +815,12 @@ export default function AIInterviewPage() {
         });
       }
 
+      if (!isSkip) {
+        hasSubmittedCodeRef.current = true;
+      } else {
+        hasSkippedCodeRef.current = true;
+      }
+
       const codingQa = {
         stage: 'coding',
         question: currentProb ? `${currentProb.title} (${currentProb.topic})` : 'Live Coding Challenge',
@@ -831,51 +927,114 @@ export default function AIInterviewPage() {
     });
   };
 
-  // Complete session & evaluate
-  const handleCompleteInterview = async () => {
-    if (!interview?.id || completing || completedRef.current) return;
-    if (!window.confirm('Finish this interview and generate your AI evaluation report?')) return;
+  // Authoritative Finish Interview flow
+  const executeFinishInterview = async () => {
+    if (!interview?.id || finishInFlightRef.current || completedRef.current) return;
 
+    finishInFlightRef.current = true;
     completedRef.current = true;
     inFlightRef.current = true;
     setCompleting(true);
+    setFinishingStep('saving');
+    setShowFinishModal(false);
+    setShowExitModal(false);
 
+    // Stop speech synthesis & audio
     if (window.speechSynthesis) {
-      window.speechSynthesis.cancel();
+      try {
+        window.speechSynthesis.cancel();
+      } catch (_) {}
+    }
+    if (isListening && typeof stopListening === 'function') {
+      try {
+        stopListening();
+      } catch (_) {}
+    }
+
+    // Determine authoritative coding outcome
+    let codingOutcome = 'incomplete';
+    if (hasSubmittedCodeRef.current) {
+      codingOutcome = 'submitted';
+    } else if (hasSkippedCodeRef.current) {
+      codingOutcome = 'skipped';
+    }
+
+    const latestCode = codeRef.current || '';
+    const frozenTranscript = [...messagesRef.current];
+    let frozenQa = [...qaHistoryRef.current];
+
+    // If currently in coding stage or coded without submitting/skipping, record qa item for coding
+    const codingQuestionId = questionsMap?.coding;
+    const hasCodingInQa = frozenQa.some((item) => item.stage === 'coding');
+    if (!hasCodingInQa && currentStage === 'coding') {
+      const codingQa = {
+        stage: 'coding',
+        question: activeCodingProblem ? `${activeCodingProblem.title} (${activeCodingProblem.topic})` : 'Live Coding Challenge',
+        answer: latestCode ? `[Candidate snapshot before finishing: ${latestCode.length} chars of ${languageRef.current} code]` : '[No code entered before finishing interview]',
+        codeSnapshot: latestCode,
+        language: languageRef.current,
+        questionId: codingQuestionId,
+        codingOutcome,
+      };
+      frozenQa.push(codingQa);
     }
 
     try {
-      const allQas = qaHistoryRef.current;
-      for (const item of allQas) {
-        if (item.questionId) {
-          await saveCandidateAnswer({
+      // Step 1: Persist all collected QA answers in parallel
+      setFinishingStep('saving');
+      const savePromises = frozenQa
+        .filter((item) => item.questionId)
+        .map((item) =>
+          saveCandidateAnswer({
             interviewId: interview.id,
             questionId: item.questionId,
             candidateAnswer: item.answer || '',
-            codeSnapshot: item.codeSnapshot || '',
-          }).catch((e) => console.warn('[AIInterviewPage] Answer batch save warning:', e));
-        }
+            codeSnapshot: item.codeSnapshot || (item.stage === 'coding' ? latestCode : ''),
+          }).catch((e) => console.warn('[AIInterviewPage] Answer save warning:', e))
+        );
+      await Promise.allSettled(savePromises);
+
+      // Step 2: Prepare evaluation data
+      setFinishingStep('preparing');
+
+      // Step 3: Trigger authoritative evaluation with transcript, qaHistory, codeSnapshot, codingOutcome
+      setFinishingStep('evaluating');
+      let evalData = null;
+      try {
+        evalData = await requestEvaluation(interview.id, {
+          transcript: frozenTranscript,
+          qaHistory: frozenQa,
+          codeSnapshot: latestCode,
+          codingOutcome,
+        });
+      } catch (evalErr) {
+        console.error('[AIInterviewPage] Evaluation generation note:', evalErr);
       }
 
-      await completeInterviewSession(interview.id);
+      // Step 4: Guarantee authoritative DB status is updated to completed
+      setFinishingStep('finalizing');
+      await completeInterviewSession(interview.id).catch((e) => console.error('[AIInterviewPage] Fallback completion error:', e));
 
-      await requestEvaluation(interview.id, {
-        transcript: messagesRef.current,
-        qaHistory: allQas,
-        codeSnapshot: codeRef.current,
-      }).catch((e) => console.warn('[AIInterviewPage] Pre-eval request warning:', e));
+      setFinishingStep('complete');
 
+      // Step 5: Remove temporary session storage & navigate
       sessionStorage.removeItem(SESSION_STORAGE_KEY);
-
       navigate(`/interview/results/${interview.id}`);
     } catch (err) {
       console.error('[AIInterviewPage] Complete error:', err);
-      alert('Failed to complete interview: ' + err.message);
-      setCompleting(false);
-      completedRef.current = false;
+      // Ensure DB status is completed even on unexpected errors
+      await completeInterviewSession(interview.id).catch(() => {});
+      sessionStorage.removeItem(SESSION_STORAGE_KEY);
+      navigate(`/interview/results/${interview.id}`);
     } finally {
       inFlightRef.current = false;
+      setCompleting(false);
     }
+  };
+
+  const handleCompleteInterview = () => {
+    if (completing || finishInFlightRef.current || completedRef.current) return;
+    setShowFinishModal(true);
   };
 
   // 1. RESUME REQUIRED SCREEN (PRE-FLIGHT)
@@ -1151,14 +1310,31 @@ export default function AIInterviewPage() {
       <div style={{
         background: '#0d111b',
         borderBottom: '1px solid var(--border-subtle)',
-        padding: '0.75rem 1.5rem',
+        padding: '0.5rem 1.25rem',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
         flexShrink: 0,
       }}>
-        {/* Left: AI Interviewer Status */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+        {/* Left: Exit button & AI Interviewer Status */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+          <button
+            onClick={() => setShowExitModal(true)}
+            className="btn btn-ghost btn-sm"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.35rem',
+              color: 'var(--text-muted)',
+              padding: '0.35rem 0.65rem',
+              border: '1px solid var(--border-subtle)',
+              borderRadius: 'var(--radius-sm)',
+            }}
+            title="Exit interview session"
+          >
+            <ArrowLeft size={15} />
+            <span>Exit</span>
+          </button>
           <div style={{
             width: 38,
             height: 38,
@@ -1253,21 +1429,33 @@ export default function AIInterviewPage() {
           <button
             onClick={handleCompleteInterview}
             disabled={completing}
-            className="btn btn-outline btn-sm"
-            style={{ borderColor: '#6366f1', color: '#a5b4fc' }}
+            className="btn btn-sm"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.4rem',
+              background: 'rgba(239, 68, 68, 0.12)',
+              border: '1px solid rgba(239, 68, 68, 0.4)',
+              color: '#f87171',
+              fontWeight: 600,
+              padding: '0.4rem 0.85rem',
+              cursor: completing ? 'not-allowed' : 'pointer',
+              transition: 'all 0.2s ease',
+            }}
           >
-            {completing ? 'Concluding...' : 'Finish & Evaluate'}
+            <CheckCircle2 size={15} />
+            <span>{completing ? '⏳ Finishing Interview...' : 'Finish Interview'}</span>
           </button>
         </div>
       </div>
 
       {/* MAIN CONTENT AREA */}
-      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: currentStage === 'coding' ? '1fr 380px' : '1fr 320px', overflow: 'hidden' }}>
+      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: currentStage === 'coding' ? '1fr 340px' : '1fr 320px', overflow: 'hidden' }}>
         
         {/* LEFT / CENTER VIEW */}
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
           
-          {/* STAGE 5: CODING SPLIT VIEW (Resizable: Problem Panel + Drag Divider + Monaco IDE) */}
+          {/* STAGE 5: CODING SPLIT VIEW (Problem Panel + Drag Divider + Monaco IDE + Console + Submit Bar) */}
           {currentStage === 'coding' ? (
             <div style={{ 
               flex: 1, 
@@ -1286,7 +1474,7 @@ export default function AIInterviewPage() {
                 />
               </div>
 
-              {/* Draggable Vertical Resizing Divider */}
+              {/* Draggable Horizontal Resizing Divider (Problem Panel <-> Code Editor) */}
               <div
                 onMouseDown={handleMouseDownCodingResize}
                 title="Drag to resize Problem Panel and Code Editor"
@@ -1304,9 +1492,9 @@ export default function AIInterviewPage() {
                 <div style={{ width: '2px', height: '32px', background: isResizingCoding ? '#a5b4fc' : 'rgba(255, 255, 255, 0.25)', borderRadius: '1px' }} />
               </div>
 
-              {/* Monaco Code Editor with Language Selector, Reset & Submit/Skip Action Buttons */}
-              <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-                <div style={{ flex: 1, minHeight: 0 }}>
+              {/* Monaco Code Editor with Language Selector, Vertical Console Divider, Console Drawer & Action Bar */}
+              <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
+                <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                   <CollaborativeCodeEditor
                     code={code}
                     language={language}
@@ -1319,9 +1507,9 @@ export default function AIInterviewPage() {
                   />
                 </div>
                 
-                {/* Submit Solution & Skip Bar */}
+                {/* Submit Solution & Skip Bar (Always pinned at bottom of Code Editor, never clipped) */}
                 <div style={{
-                  padding: '0.75rem 1.25rem',
+                  padding: '0.6rem 1.25rem',
                   background: '#0d111b',
                   borderTop: '1px solid var(--border-subtle)',
                   display: 'flex',
@@ -1329,15 +1517,17 @@ export default function AIInterviewPage() {
                   justifyContent: 'space-between',
                   gap: '1rem',
                   flexWrap: 'wrap',
+                  flexShrink: 0,
+                  zIndex: 15,
                 }}>
                   <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                    Language: <span style={{ color: '#38bdf8', fontWeight: 600 }}>{language.toUpperCase()}</span> • Ask questions in the sidebar or submit your code to continue.
+                    Language: <span style={{ color: '#38bdf8', fontWeight: 600 }}>{language.toUpperCase()}</span> • Run code or ask Alex in the chat before submitting.
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                     <button
                       type="button"
                       onClick={handleSkipCodingStage}
-                      disabled={isAiTyping || inFlightRef.current}
+                      disabled={isAiTyping || inFlightRef.current || completing}
                       className="btn btn-outline-danger btn-sm"
                       style={{
                         display: 'flex',
@@ -1346,7 +1536,7 @@ export default function AIInterviewPage() {
                         borderColor: 'rgba(239, 68, 68, 0.4)',
                         color: '#f87171',
                         background: 'rgba(239, 68, 68, 0.05)',
-                        cursor: isAiTyping || inFlightRef.current ? 'not-allowed' : 'pointer',
+                        cursor: isAiTyping || inFlightRef.current || completing ? 'not-allowed' : 'pointer',
                       }}
                       title="Skip this coding problem if you are stuck or unable to solve it"
                     >
@@ -1356,9 +1546,9 @@ export default function AIInterviewPage() {
                     <button
                       type="button"
                       onClick={handleCompleteCodingStage}
-                      disabled={isAiTyping || inFlightRef.current}
+                      disabled={isAiTyping || inFlightRef.current || completing}
                       className="btn btn-primary btn-sm"
-                      style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}
+                      style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 600 }}
                     >
                       <CheckCircle2 size={16} />
                       <span>Submit Solution & Continue to Review</span>
@@ -1468,274 +1658,698 @@ export default function AIInterviewPage() {
             </div>
           )}
 
-          {/* CANDIDATE INPUT AREA (Always pinned at bottom of center area) */}
-          <div style={{
-            background: '#0d111b',
-            borderTop: '1px solid var(--border-subtle)',
-            padding: '1rem 1.5rem',
-            flexShrink: 0,
-          }}>
-            {/* Input Mode Selector */}
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <button
-                  onClick={() => setInputMode('speak')}
-                  className={`btn btn-xs ${inputMode === 'speak' ? 'btn-primary' : 'btn-ghost'}`}
-                  style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
-                >
-                  <Mic size={14} />
-                  <span>Voice (Speech-to-Text)</span>
-                </button>
-                <button
-                  onClick={() => setInputMode('type')}
-                  className={`btn btn-xs ${inputMode === 'type' ? 'btn-primary' : 'btn-ghost'}`}
-                  style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
-                >
-                  <Keyboard size={14} />
-                  <span>Keyboard Typing</span>
-                </button>
-              </div>
-
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                {inputMode === 'speak' ? 'Click microphone to speak naturally' : 'Press Enter to submit answer'}
-              </div>
-            </div>
-
-            {/* SPEAK MODE: Large Voice Capture Interface */}
-            {inputMode === 'speak' && (
-              <div style={{
-                background: 'var(--bg-input)',
-                border: isListening ? '1px solid #ef4444' : '1px solid var(--border-subtle)',
-                borderRadius: 'var(--radius-md)',
-                padding: '0.85rem 1.25rem',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '0.75rem',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                    <div style={{
-                      width: 10,
-                      height: 10,
-                      borderRadius: '50%',
-                      background: isListening ? '#ef4444' : '#6b7280',
-                      boxShadow: isListening ? '0 0 8px #ef4444' : 'none',
-                    }} />
-                    <span style={{ fontSize: '0.875rem', color: isListening ? '#f87171' : 'var(--text-secondary)' }}>
-                      {isListening ? 'Listening to your microphone... speak clearly' : transcript ? 'Voice captured. You can send or edit below.' : 'Microphone idle. Click the button to start speaking.'}
-                    </span>
-                  </div>
-
+          {/* CANDIDATE INPUT AREA (Only in conversational stages; in coding stage it lives in right sidebar) */}
+          {currentStage !== 'coding' && (
+            <div style={{
+              background: '#0d111b',
+              borderTop: '1px solid var(--border-subtle)',
+              padding: '1rem 1.5rem',
+              flexShrink: 0,
+            }}>
+              {/* Input Mode Selector */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <button
-                    onClick={() => {
-                      if (isListening) {
-                        stopListening();
-                      } else {
-                        resetTranscript();
-                        startListening();
-                      }
-                    }}
-                    style={{
-                      width: 44,
-                      height: 44,
-                      borderRadius: '50%',
-                      background: isListening ? '#ef4444' : '#6366f1',
-                      border: 'none',
-                      color: '#fff',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      cursor: 'pointer',
-                      boxShadow: isListening ? '0 0 16px rgba(239, 68, 68, 0.5)' : '0 0 12px rgba(99, 102, 241, 0.4)',
-                      transition: 'all 0.2s ease',
-                      flexShrink: 0,
-                    }}
-                    title={isListening ? 'Stop Listening' : 'Click to Speak'}
+                    onClick={() => setInputMode('speak')}
+                    className={`btn btn-xs ${inputMode === 'speak' ? 'btn-primary' : 'btn-ghost'}`}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
                   >
-                    {isListening ? <MicOff size={22} /> : <Mic size={22} />}
+                    <Mic size={14} />
+                    <span>Voice (Speech-to-Text)</span>
+                  </button>
+                  <button
+                    onClick={() => setInputMode('type')}
+                    className={`btn btn-xs ${inputMode === 'type' ? 'btn-primary' : 'btn-ghost'}`}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                  >
+                    <Keyboard size={14} />
+                    <span>Keyboard Typing</span>
                   </button>
                 </div>
 
-                {/* Transcript Action Controls */}
-                {transcript && (
-                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  {inputMode === 'speak' ? 'Click microphone to speak naturally' : 'Press Enter to submit answer'}
+                </div>
+              </div>
+
+              {/* SPEAK MODE: Large Voice Capture Interface */}
+              {inputMode === 'speak' && (
+                <div style={{
+                  background: 'var(--bg-input)',
+                  border: isListening ? '1px solid #ef4444' : '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-md)',
+                  padding: '0.85rem 1.25rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.75rem',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                      <div style={{
+                        width: 10,
+                        height: 10,
+                        borderRadius: '50%',
+                        background: isListening ? '#ef4444' : '#6b7280',
+                        boxShadow: isListening ? '0 0 8px #ef4444' : 'none',
+                      }} />
+                      <span style={{ fontSize: '0.875rem', color: isListening ? '#f87171' : 'var(--text-secondary)' }}>
+                        {isListening ? 'Listening to your microphone... speak clearly' : transcript ? 'Voice captured. You can send or edit below.' : 'Microphone idle. Click the button to start speaking.'}
+                      </span>
+                    </div>
+
                     <button
                       onClick={() => {
-                        stopListening();
-                        setUserInput(transcript);
-                        setInputMode('type');
+                        if (isListening) {
+                          stopListening();
+                        } else {
+                          resetTranscript();
+                          startListening();
+                        }
                       }}
-                      className="btn btn-outline btn-sm"
-                      style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                      style={{
+                        width: 44,
+                        height: 44,
+                        borderRadius: '50%',
+                        background: isListening ? '#ef4444' : '#6366f1',
+                        border: 'none',
+                        color: '#fff',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: 'pointer',
+                        boxShadow: isListening ? '0 0 16px rgba(239, 68, 68, 0.5)' : '0 0 12px rgba(99, 102, 241, 0.4)',
+                        transition: 'all 0.2s ease',
+                        flexShrink: 0,
+                      }}
+                      title={isListening ? 'Stop Listening' : 'Click to Speak'}
                     >
-                      <Edit3 size={13} />
-                      <span>Edit Transcript</span>
-                    </button>
-                    <button
-                      onClick={() => handleSendResponse(transcript)}
-                      disabled={isAiTyping || inFlightRef.current}
-                      className="btn btn-primary btn-sm"
-                      style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
-                    >
-                      <Send size={13} />
-                      <span>Send Answer</span>
+                      {isListening ? <MicOff size={22} /> : <Mic size={22} />}
                     </button>
                   </div>
-                )}
-              </div>
-            )}
 
-            {/* TYPE MODE: Direct Text Input Bar */}
-            {inputMode === 'type' && (
-              <form onSubmit={(e) => { e.preventDefault(); handleSendResponse(userInput); }} style={{ display: 'flex', gap: '0.75rem' }}>
-                <textarea
-                  rows={2}
-                  placeholder="Type your response to the interviewer..."
-                  value={userInput}
-                  onChange={(e) => setUserInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault();
-                      handleSendResponse(userInput);
+                  {/* Transcript Action Controls */}
+                  {transcript && (
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
+                      <button
+                        onClick={() => {
+                          stopListening();
+                          setUserInput(transcript);
+                          setInputMode('type');
+                        }}
+                        className="btn btn-outline btn-sm"
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                      >
+                        <Edit3 size={13} />
+                        <span>Edit Transcript</span>
+                      </button>
+                      <button
+                        onClick={() => handleSendResponse(transcript)}
+                        disabled={isAiTyping || inFlightRef.current}
+                        className="btn btn-primary btn-sm"
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                      >
+                        <Send size={13} />
+                        <span>Send Answer</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TYPE MODE: Direct Text Input Bar */}
+              {inputMode === 'type' && (
+                <form onSubmit={(e) => { e.preventDefault(); handleSendResponse(userInput); }} style={{ display: 'flex', gap: '0.75rem' }}>
+                  <textarea
+                    rows={2}
+                    placeholder="Type your response to the interviewer..."
+                    value={userInput}
+                    onChange={(e) => setUserInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleSendResponse(userInput);
+                      }
+                    }}
+                    style={{
+                      flex: 1,
+                      background: 'var(--bg-input)',
+                      border: '1px solid var(--border-subtle)',
+                      borderRadius: 'var(--radius-md)',
+                      padding: '0.75rem 1rem',
+                      color: '#f9fafb',
+                      fontSize: '0.925rem',
+                      resize: 'none',
+                    }}
+                  />
+                  <button
+                    type="submit"
+                    disabled={!userInput.trim() || isAiTyping || inFlightRef.current}
+                    className="btn btn-primary"
+                    style={{ padding: '0 1.5rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                  >
+                    <Send size={16} />
+                    <span>Send</span>
+                  </button>
+                </form>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* RIGHT PANEL: AI INTERVIEW CHAT (during Coding Stage) OR 7-STAGE PROGRESS & RESUME CONTEXT (other stages) */}
+        {currentStage === 'coding' ? (
+          <div style={{
+            background: '#0e1422',
+            borderLeft: '1px solid var(--border-subtle)',
+            display: 'flex',
+            flexDirection: 'column',
+            height: '100%',
+            overflow: 'hidden',
+          }}>
+            {/* Coding Chat Header */}
+            <div style={{
+              padding: '0.75rem 1rem',
+              background: '#0a0e1a',
+              borderBottom: '1px solid var(--border-subtle)',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.65rem',
+              flexShrink: 0,
+            }}>
+              <div style={{
+                width: 32,
+                height: 32,
+                borderRadius: '50%',
+                background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: '#fff',
+                flexShrink: 0,
+              }}>
+                <Bot size={17} />
+              </div>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: '0.875rem', fontWeight: 700, color: '#f9fafb', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                  <span>Alex Vance</span>
+                  <span className="badge badge-success" style={{ fontSize: '0.65rem', padding: '1px 5px' }}>Live</span>
+                </div>
+                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  Ask questions or discuss solution approach
+                </div>
+              </div>
+            </div>
+
+            {/* Coding Chat Messages */}
+            <div style={{
+              flex: 1,
+              overflowY: 'auto',
+              padding: '1rem',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: '0.85rem',
+            }}>
+              {messages.map((m, idx) => {
+                const isUser = m.role === 'user';
+                return (
+                  <div
+                    key={idx}
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: isUser ? 'flex-end' : 'flex-start',
+                      maxWidth: '92%',
+                      alignSelf: isUser ? 'flex-end' : 'flex-start',
+                    }}
+                  >
+                    <div style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.35rem',
+                      marginBottom: '0.2rem',
+                      fontSize: '0.7rem',
+                      color: 'var(--text-muted)',
+                    }}>
+                      {isUser ? (
+                        <><span>{m.timestamp}</span><span>You</span></>
+                      ) : (
+                        <><span style={{ color: '#a5b4fc', fontWeight: 600 }}>Alex</span><span>{m.timestamp}</span></>
+                      )}
+                    </div>
+                    <div
+                      style={{
+                        padding: '0.65rem 0.85rem',
+                        borderRadius: isUser ? '12px 12px 2px 12px' : '12px 12px 12px 2px',
+                        background: isUser ? '#4f46e5' : '#1e293b',
+                        color: '#fff',
+                        fontSize: '0.85rem',
+                        lineHeight: '1.5',
+                        boxShadow: '0 2px 6px rgba(0, 0, 0, 0.2)',
+                      }}
+                    >
+                      {m.content}
+                    </div>
+                  </div>
+                );
+              })}
+              {isAiTyping && (
+                <div style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '0.4rem', color: '#a5b4fc', fontSize: '0.78rem' }}>
+                  <RotateCw size={12} className="spin" />
+                  <span>Alex is analyzing...</span>
+                </div>
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Compact Chat Input Bar for Coding Stage */}
+            <div style={{
+              padding: '0.65rem 0.85rem',
+              background: '#0a0e1a',
+              borderTop: '1px solid var(--border-subtle)',
+              flexShrink: 0,
+            }}>
+              <form onSubmit={(e) => { e.preventDefault(); handleSendResponse(userInput); }} style={{ display: 'flex', gap: '0.4rem' }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isListening) {
+                      stopListening();
+                    } else {
+                      resetTranscript();
+                      startListening();
                     }
                   }}
+                  className={`btn btn-sm ${isListening ? 'btn-danger' : 'btn-ghost'}`}
+                  style={{ padding: '0.4rem', color: isListening ? '#fff' : '#818cf8', flexShrink: 0 }}
+                  title={isListening ? 'Stop recording voice' : 'Speak to Alex'}
+                >
+                  {isListening ? <MicOff size={15} /> : <Mic size={15} />}
+                </button>
+                <input
+                  type="text"
+                  placeholder="Ask Alex or clarify..."
+                  value={userInput}
+                  onChange={(e) => setUserInput(e.target.value)}
+                  disabled={isAiTyping || inFlightRef.current}
                   style={{
                     flex: 1,
                     background: 'var(--bg-input)',
                     border: '1px solid var(--border-subtle)',
-                    borderRadius: 'var(--radius-md)',
-                    padding: '0.75rem 1rem',
+                    borderRadius: 'var(--radius-sm)',
+                    padding: '0.4rem 0.65rem',
                     color: '#f9fafb',
-                    fontSize: '0.925rem',
-                    resize: 'none',
+                    fontSize: '0.82rem',
                   }}
                 />
                 <button
                   type="submit"
                   disabled={!userInput.trim() || isAiTyping || inFlightRef.current}
-                  className="btn btn-primary"
-                  style={{ padding: '0 1.5rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                  className="btn btn-primary btn-sm"
+                  style={{ padding: '0.4rem 0.65rem' }}
                 >
-                  <Send size={16} />
-                  <span>Send</span>
+                  <Send size={13} />
                 </button>
               </form>
-            )}
+            </div>
           </div>
-        </div>
-
-        {/* RIGHT PANEL: 7-STAGE PROGRESS & RESUME CONTEXT */}
-        <div style={{
-          background: '#0e1422',
-          borderLeft: '1px solid var(--border-subtle)',
-          padding: '1.75rem 1.25rem',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '1.75rem',
-          overflowY: 'auto',
-        }}>
-          {/* Stepper Header */}
-          <div>
-            <h3 style={{ fontSize: '1rem', color: '#f9fafb', marginBottom: '0.25rem' }}>
-              Interview Progress
-            </h3>
-            <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-              Deterministic 7-Stage State Machine
-            </p>
-          </div>
-
-          {/* Stepper Progress List */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-            {STAGES.map((s, idx) => {
-              const stageOrder = STAGES.findIndex((x) => x.key === currentStage);
-              const isPast = idx < stageOrder;
-              const isCurrent = idx === stageOrder;
-
-              return (
-                <div
-                  key={s.key}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'flex-start',
-                    gap: '0.75rem',
-                    padding: '0.65rem 0.85rem',
-                    borderRadius: 'var(--radius-sm)',
-                    background: isCurrent ? 'rgba(99, 102, 241, 0.12)' : 'transparent',
-                    border: isCurrent ? '1px solid rgba(99, 102, 241, 0.35)' : '1px solid transparent',
-                  }}
-                >
-                  <div style={{
-                    width: 24,
-                    height: 24,
-                    borderRadius: '50%',
-                    background: isPast ? '#10b981' : isCurrent ? '#6366f1' : 'rgba(255, 255, 255, 0.08)',
-                    color: '#fff',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: '0.75rem',
-                    fontWeight: 700,
-                    flexShrink: 0,
-                  }}>
-                    {isPast ? <Check size={13} /> : idx + 1}
-                  </div>
-
-                  <div>
-                    <div style={{ fontSize: '0.85rem', fontWeight: isCurrent ? 700 : 500, color: isCurrent ? '#a5b4fc' : isPast ? '#94a3b8' : 'var(--text-muted)' }}>
-                      {s.label}
-                    </div>
-                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                      {s.desc}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Resume Analyzed Card */}
+        ) : (
+          /* STANDARD RIGHT PANEL: 7-STAGE PROGRESS & RESUME CONTEXT */
           <div style={{
-            background: 'rgba(99, 102, 241, 0.05)',
-            border: '1px solid rgba(99, 102, 241, 0.2)',
-            borderRadius: 'var(--radius-md)',
-            padding: '1rem',
+            background: '#0e1422',
+            borderLeft: '1px solid var(--border-subtle)',
+            padding: '1.75rem 1.25rem',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: '1.75rem',
+            overflowY: 'auto',
           }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', color: '#10b981' }}>
-              <CheckCircle2 size={16} />
-              <span style={{ fontWeight: 700, fontSize: '0.85rem' }}>Resume: Analyzed</span>
+            {/* Stepper Header */}
+            <div>
+              <h3 style={{ fontSize: '1rem', color: '#f9fafb', marginBottom: '0.25rem' }}>
+                Interview Progress
+              </h3>
+              <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                Deterministic 7-Stage State Machine
+              </p>
             </div>
-            <p style={{ fontSize: '0.78rem', color: '#cbd5e1', lineHeight: 1.4, margin: '0 0 0.65rem 0' }}>
-              Alex is examining projects and tech stacks extracted from your verified resume.
+
+            {/* Stepper Progress List */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+              {STAGES.map((s, idx) => {
+                const stageOrder = STAGES.findIndex((x) => x.key === currentStage);
+                const isPast = idx < stageOrder;
+                const isCurrent = idx === stageOrder;
+
+                return (
+                  <div
+                    key={s.key}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: '0.75rem',
+                      padding: '0.65rem 0.85rem',
+                      borderRadius: 'var(--radius-sm)',
+                      background: isCurrent ? 'rgba(99, 102, 241, 0.12)' : 'transparent',
+                      border: isCurrent ? '1px solid rgba(99, 102, 241, 0.35)' : '1px solid transparent',
+                      transition: 'all 0.2s ease',
+                    }}
+                  >
+                    <div style={{
+                      width: 22,
+                      height: 22,
+                      borderRadius: '50%',
+                      background: isPast ? '#10b981' : isCurrent ? '#6366f1' : 'var(--bg-input)',
+                      color: isPast || isCurrent ? '#fff' : 'var(--text-muted)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontSize: '0.7rem',
+                      fontWeight: 700,
+                      flexShrink: 0,
+                      marginTop: '0.1rem',
+                    }}>
+                      {isPast ? <Check size={13} /> : idx + 1}
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '0.85rem', fontWeight: isCurrent ? 700 : 500, color: isCurrent ? '#a5b4fc' : isPast ? '#f9fafb' : 'var(--text-muted)' }}>
+                        {s.label}
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                        {s.desc}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Candidate Resume Context Pill */}
+            <div style={{
+              background: 'rgba(16, 185, 129, 0.05)',
+              border: '1px solid rgba(16, 185, 129, 0.2)',
+              borderRadius: 'var(--radius-md)',
+              padding: '1rem',
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', color: '#10b981' }}>
+                <CheckCircle2 size={16} />
+                <span style={{ fontWeight: 700, fontSize: '0.85rem' }}>Resume: Analyzed</span>
+              </div>
+              <p style={{ fontSize: '0.78rem', color: '#cbd5e1', lineHeight: 1.4, margin: '0 0 0.65rem 0' }}>
+                Alex is examining projects and tech stacks extracted from your verified resume.
+              </p>
+
+              {profile?.skills && profile.skills.length > 0 && (
+                <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+                  {(Array.isArray(profile.skills) ? profile.skills : profile.skills.split(',')).slice(0, 4).map((sk, skIdx) => (
+                    <span key={skIdx} className="badge badge-secondary" style={{ fontSize: '0.68rem', padding: '0.15rem 0.45rem' }}>
+                      {typeof sk === 'string' ? sk.trim() : sk}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Current Topic Indicator */}
+            <div style={{ marginTop: 'auto', background: 'rgba(255, 255, 255, 0.02)', padding: '0.85rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '0.2rem', fontWeight: 600 }}>
+                Current Focus
+              </div>
+              <div style={{ fontSize: '0.85rem', color: '#38bdf8', fontWeight: 600 }}>
+                {currentStage === 'introduction' ? 'Candidate Introduction'
+                  : currentStage === 'personal' ? 'Experience & Passion'
+                  : currentStage === 'resume_dive' ? (stageFollowUpCount > 0 ? 'Project Architecture (Deep Dive)' : 'Project Architecture')
+                  : currentStage === 'technical' ? (stageFollowUpCount > 0 ? 'Core Concepts (Probing Trade-offs)' : 'Core Concepts & Trade-offs')
+                  : currentStage === 'coding' ? 'Live Coding Solution'
+                  : currentStage === 'followup' ? (stageFollowUpCount > 0 ? 'Complexity & Optimization Follow-up' : 'Time & Space Complexity')
+                  : 'Session Wrap-up'}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* FINISHING INTERVIEW MULTI-STEP PROGRESS MODAL */}
+      {completing && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.85)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10000,
+            padding: '1.5rem',
+            backdropFilter: 'blur(8px)',
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              maxWidth: '480px',
+              width: '100%',
+              background: '#111827',
+              border: '1px solid rgba(99, 102, 241, 0.4)',
+              boxShadow: '0 25px 60px rgba(0, 0, 0, 0.8)',
+              padding: '2.25rem',
+              borderRadius: 'var(--radius-lg, 12px)',
+              textAlign: 'center',
+            }}
+          >
+            <div
+              style={{
+                width: 56,
+                height: 56,
+                borderRadius: '50%',
+                background: 'rgba(99, 102, 241, 0.15)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                margin: '0 auto 1.25rem auto',
+                border: '1px solid rgba(99, 102, 241, 0.3)',
+              }}
+            >
+              <Sparkles size={28} color="#818cf8" style={{ animation: 'spin 2.5s linear infinite' }} />
+            </div>
+
+            <h3 style={{ fontSize: '1.35rem', fontWeight: 800, color: '#f9fafb', marginBottom: '0.4rem' }}>
+              Finishing Interview
+            </h3>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', marginBottom: '1.5rem', lineHeight: 1.5 }}>
+              Analyzing your responses and generating your verified AI evaluation report.
             </p>
 
-            {profile?.skills && profile.skills.length > 0 && (
-              <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
-                {(Array.isArray(profile.skills) ? profile.skills : profile.skills.split(',')).slice(0, 4).map((sk, skIdx) => (
-                  <span key={skIdx} className="badge badge-secondary" style={{ fontSize: '0.68rem', padding: '0.15rem 0.45rem' }}>
-                    {typeof sk === 'string' ? sk.trim() : sk}
-                  </span>
-                ))}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', textAlign: 'left', background: '#0a0e18', padding: '1.25rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-subtle)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.85rem' }}>
+                {['preparing', 'evaluating', 'finalizing', 'complete'].includes(finishingStep) ? (
+                  <CheckCircle2 size={16} color="#10b981" />
+                ) : finishingStep === 'saving' ? (
+                  <RotateCw size={16} color="#818cf8" className="spin" />
+                ) : (
+                  <span style={{ width: 16, height: 16, borderRadius: '50%', border: '2px solid #4b5563', display: 'inline-block' }} />
+                )}
+                <span style={{ color: ['preparing', 'evaluating', 'finalizing', 'complete'].includes(finishingStep) ? '#f9fafb' : '#94a3b8' }}>
+                  Saving candidate responses & code snapshot
+                </span>
               </div>
-            )}
-          </div>
 
-          {/* Current Topic Indicator */}
-          <div style={{ marginTop: 'auto', background: 'rgba(255, 255, 255, 0.02)', padding: '0.85rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
-            <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '0.2rem', fontWeight: 600 }}>
-              Current Focus
-            </div>
-            <div style={{ fontSize: '0.85rem', color: '#38bdf8', fontWeight: 600 }}>
-              {currentStage === 'introduction' ? 'Candidate Introduction'
-                : currentStage === 'personal' ? 'Experience & Passion'
-                : currentStage === 'resume_dive' ? (stageFollowUpCount > 0 ? 'Project Architecture (Deep Dive)' : 'Project Architecture')
-                : currentStage === 'technical' ? (stageFollowUpCount > 0 ? 'Core Concepts (Probing Trade-offs)' : 'Core Concepts & Trade-offs')
-                : currentStage === 'coding' ? 'Live Coding Solution'
-                : currentStage === 'followup' ? (stageFollowUpCount > 0 ? 'Complexity & Optimization Follow-up' : 'Time & Space Complexity')
-                : 'Session Wrap-up'}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.85rem' }}>
+                {['evaluating', 'finalizing', 'complete'].includes(finishingStep) ? (
+                  <CheckCircle2 size={16} color="#10b981" />
+                ) : finishingStep === 'preparing' ? (
+                  <RotateCw size={16} color="#818cf8" className="spin" />
+                ) : (
+                  <span style={{ width: 16, height: 16, borderRadius: '50%', border: '2px solid #4b5563', display: 'inline-block' }} />
+                )}
+                <span style={{ color: ['evaluating', 'finalizing', 'complete'].includes(finishingStep) ? '#f9fafb' : '#94a3b8' }}>
+                  Preparing interview dialogue & rubric
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.85rem' }}>
+                {['finalizing', 'complete'].includes(finishingStep) ? (
+                  <CheckCircle2 size={16} color="#10b981" />
+                ) : finishingStep === 'evaluating' ? (
+                  <RotateCw size={16} color="#818cf8" className="spin" />
+                ) : (
+                  <span style={{ width: 16, height: 16, borderRadius: '50%', border: '2px solid #4b5563', display: 'inline-block' }} />
+                )}
+                <span style={{ color: ['finalizing', 'complete'].includes(finishingStep) ? '#f9fafb' : '#94a3b8' }}>
+                  Generating evidence-based AI evaluation
+                </span>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', fontSize: '0.85rem' }}>
+                {finishingStep === 'complete' ? (
+                  <CheckCircle2 size={16} color="#10b981" />
+                ) : finishingStep === 'finalizing' ? (
+                  <RotateCw size={16} color="#818cf8" className="spin" />
+                ) : (
+                  <span style={{ width: 16, height: 16, borderRadius: '50%', border: '2px solid #4b5563', display: 'inline-block' }} />
+                )}
+                <span style={{ color: finishingStep === 'complete' ? '#f9fafb' : '#94a3b8' }}>
+                  Finalizing score & debrief report
+                </span>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
+
+      {/* FINISH INTERVIEW CONFIRMATION MODAL */}
+      {showFinishModal && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.75)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+            padding: '1.25rem',
+            backdropFilter: 'blur(4px)',
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              maxWidth: '480px',
+              width: '100%',
+              background: '#131722',
+              border: '1px solid rgba(99, 102, 241, 0.4)',
+              boxShadow: '0 20px 50px rgba(0, 0, 0, 0.8)',
+              padding: '1.75rem',
+              borderRadius: 'var(--radius-lg, 12px)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+              <div
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: '50%',
+                  background: 'rgba(99, 102, 241, 0.15)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#818cf8',
+                  flexShrink: 0,
+                }}
+              >
+                <CheckCircle2 size={24} />
+              </div>
+              <h3 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                Finish Interview?
+              </h3>
+            </div>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', lineHeight: 1.5, marginBottom: '1.75rem' }}>
+              Are you sure you want to finish this interview? Your current responses will be evaluated and the interview will be marked completed.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.85rem' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setShowFinishModal(false)}
+                disabled={completing}
+              >
+                Continue Interview
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                style={{ background: '#ef4444', borderColor: '#dc2626', color: '#fff', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                onClick={executeFinishInterview}
+                disabled={completing}
+              >
+                {completing ? '⏳ Finishing Interview...' : 'Finish Interview'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* EXIT ACTIVE INTERVIEW CONFIRMATION MODAL */}
+      {showExitModal && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.75)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+            padding: '1.25rem',
+            backdropFilter: 'blur(4px)',
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              maxWidth: '480px',
+              width: '100%',
+              background: '#131722',
+              border: '1px solid rgba(239, 68, 68, 0.4)',
+              boxShadow: '0 20px 50px rgba(0, 0, 0, 0.8)',
+              padding: '1.75rem',
+              borderRadius: 'var(--radius-lg, 12px)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+              <div
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: '50%',
+                  background: 'rgba(239, 68, 68, 0.15)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#ef4444',
+                  flexShrink: 0,
+                }}
+              >
+                <AlertCircle size={24} />
+              </div>
+              <h3 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                Your interview is still active.
+              </h3>
+            </div>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', lineHeight: 1.5, marginBottom: '1.75rem' }}>
+              If you leave now, you can finish your interview and receive your evaluation report, or you can stay and continue answering questions.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.85rem' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setShowExitModal(false)}
+                disabled={completing}
+              >
+                Stay in Interview
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                style={{ background: '#ef4444', borderColor: '#dc2626', color: '#fff', fontWeight: 700 }}
+                onClick={executeFinishInterview}
+                disabled={completing}
+              >
+                {completing ? 'Finishing...' : 'Finish Interview and Leave'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

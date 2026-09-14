@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { getLeaderboard } from '../services/leaderboardService';
+import { getLeaderboard } from '../services/leaderboardService.js';
+import { supabase } from '../lib/supabase.js';
 import { 
   Trophy, 
   Medal, 
@@ -41,7 +42,35 @@ export default function LeaderboardPage() {
 
   useEffect(() => {
     loadData();
+
+    if (!supabase) return;
+
+    // Real-time listener: automatically refresh whenever any interview completes or is evaluated
+    const channel = supabase
+      .channel('leaderboard_interviews_realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'interviews',
+        },
+        () => {
+          loadData(true);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
+
+  // Format score helper ensuring 2 decimal places (e.g. 8.30, 7.75, 8.00) or N/A
+  const formatScore = (val) => {
+    if (val === null || val === undefined || isNaN(Number(val))) return 'N/A';
+    return Number(val).toFixed(2);
+  };
 
   // Filter candidates by search term
   const filteredCandidates = candidates.filter((c) => {
@@ -84,11 +113,11 @@ export default function LeaderboardPage() {
             width: 34,
             height: 34,
             borderRadius: '50%',
-            background: 'linear-gradient(135deg, #e2e8f0 0%, #94a3b8 100%)',
-            color: '#111827',
+            background: 'linear-gradient(135deg, #94a3b8 0%, #64748b 100%)',
+            color: '#ffffff',
             fontWeight: 800,
             fontSize: '0.95rem',
-            boxShadow: '0 0 10px rgba(226, 232, 240, 0.3)',
+            boxShadow: '0 0 10px rgba(148, 163, 184, 0.3)',
           }}>
             2
           </div>
@@ -149,7 +178,7 @@ export default function LeaderboardPage() {
         </p>
       </div>
 
-      {/* Logged-in Candidate Highlight Banner */}
+      {/* Logged-in Candidate Highlight Banner (Ranked) */}
       {userRankEntry && (
         <div style={{
           background: 'linear-gradient(135deg, rgba(99, 102, 241, 0.15) 0%, rgba(6, 182, 212, 0.1) 100%)',
@@ -187,7 +216,64 @@ export default function LeaderboardPage() {
             <div style={{ textAlign: 'center' }}>
               <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Average Score</div>
               <div style={{ fontSize: '1.25rem', fontWeight: 800, color: '#10b981' }}>
-                {userRankEntry.average_score} <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>/ 10</span>
+                {formatScore(userRankEntry.average_score)} <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>/ 10</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Logged-in Candidate Banner (Unranked - 0 Completed Interviews) */}
+      {user && profile?.role === 'candidate' && !userRankEntry && !loading && (
+        <div style={{
+          background: 'rgba(255, 255, 255, 0.03)',
+          border: '1px dashed var(--border-subtle)',
+          borderRadius: 'var(--radius-lg)',
+          padding: '1.25rem 1.75rem',
+          marginBottom: '2rem',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: '1rem',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <div style={{
+              width: 34,
+              height: 34,
+              borderRadius: '50%',
+              background: 'rgba(255, 255, 255, 0.05)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              color: 'var(--text-muted)',
+              fontSize: '0.9rem',
+              fontWeight: 700,
+            }}>
+              —
+            </div>
+            <div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 700 }}>
+                Your Current Standing
+              </div>
+              <div style={{ fontSize: '1.05rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                {profile.full_name || 'Candidate'} (Unranked &bull; 0 completed interviews)
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'center' }}>
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Interviews</div>
+              <div style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-muted)' }}>
+                0
+              </div>
+            </div>
+
+            <div style={{ textAlign: 'center' }}>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Average Score</div>
+              <div style={{ fontSize: '1.15rem', fontWeight: 700, color: 'var(--text-muted)' }}>
+                N/A
               </div>
             </div>
           </div>
@@ -228,10 +314,10 @@ export default function LeaderboardPage() {
         </div>
       </div>
 
-      {/* Leaderboard Table / Cards */}
+      {/* Content Area */}
       {loading ? (
-        <div className="card" style={{ padding: '4rem 2rem', textAlign: 'center' }}>
-          <RotateCw size={32} style={{ animation: 'spin 1s linear infinite', margin: '0 auto 1rem auto', color: 'var(--accent-primary)' }} />
+        <div style={{ textAlign: 'center', padding: '4rem 1rem' }}>
+          <div className="spinner" style={{ margin: '0 auto 1rem auto' }} />
           <p style={{ color: 'var(--text-secondary)' }}>Loading leaderboard rankings...</p>
         </div>
       ) : candidates.length === 0 ? (
@@ -380,9 +466,9 @@ export default function LeaderboardPage() {
                         <div style={{
                           fontSize: '1.25rem',
                           fontWeight: 800,
-                          color: c.average_score >= 8.5 ? '#10b981' : c.average_score >= 7.0 ? '#38bdf8' : '#f59e0b',
+                          color: Number(c.average_score) >= 8.5 ? '#10b981' : Number(c.average_score) >= 7.0 ? '#38bdf8' : '#f59e0b',
                         }}>
-                          {c.average_score} <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>/ 10</span>
+                          {formatScore(c.average_score)} <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>/ 10</span>
                         </div>
                       </td>
                     </tr>

@@ -209,3 +209,55 @@ export async function sendAITurn({
 
   return response.json();
 }
+
+
+/**
+ * Retrieves the current active AI interview for a candidate, if one exists.
+ */
+export async function getActiveAIInterview(candidateId) {
+  if (!supabase || !candidateId) return null;
+  const { data, error } = await supabase
+    .from('interviews')
+    .select('*')
+    .eq('candidate_id', candidateId)
+    .eq('is_ai', true)
+    .eq('status', 'active')
+    .order('created_at', { ascending: false })
+    .limit(1);
+
+  if (error || !data || data.length === 0) return null;
+  return data[0];
+}
+
+/**
+ * Retrieves a specific AI interview by ID with its authoritative status.
+ */
+export async function getAIInterviewById(interviewId) {
+  if (!supabase || !interviewId) return null;
+  const { data, error } = await supabase
+    .from('interviews')
+    .select('*')
+    .eq('id', interviewId)
+    .single();
+
+  if (error || !data) return null;
+  return data;
+}
+
+/**
+ * Concludes/archives any lingering active AI interviews for a candidate.
+ * Ensures a single active AI session per candidate.
+ */
+export async function archiveCandidateActiveAIInterviews(candidateId) {
+  if (!supabase || !candidateId) return;
+  await supabase
+    .from('interviews')
+    .update({
+      status: 'completed',
+      completion_time: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('candidate_id', candidateId)
+    .eq('is_ai', true)
+    .eq('status', 'active');
+}

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { getInterviewEvaluation } from '../services/evaluationService';
+import { getInterviewEvaluation, requestEvaluation } from '../services/evaluationService';
 import { supabase } from '../lib/supabase';
 import {
   Award,
@@ -35,6 +35,31 @@ export default function InterviewResultsPage() {
   const [error, setError] = useState('');
   const [showReviewModal, setShowReviewModal] = useState(false);
   const [existingReview, setExistingReview] = useState(null);
+  const [retryingAiEval, setRetryingAiEval] = useState(false);
+
+  const handleRetryAiEval = async () => {
+    if (!interviewId || retryingAiEval) return;
+    setRetryingAiEval(true);
+    setError('');
+    try {
+      const res = await requestEvaluation(interviewId);
+      if (res && res.evaluation) {
+        setReport((prev) => ({
+          ...prev,
+          evaluation: res.evaluation,
+          score: res.score ?? res.evaluation?.overallScore,
+          isPending: false,
+        }));
+      } else {
+        await loadReport();
+      }
+    } catch (err) {
+      console.error('[InterviewResultsPage] Retry evaluation error:', err);
+      setError(err.message || 'Failed to generate evaluation report.');
+    } finally {
+      setRetryingAiEval(false);
+    }
+  };
 
   const loadReport = async () => {
     if (!interviewId) return;
@@ -134,8 +159,84 @@ export default function InterviewResultsPage() {
   const isInterviewer = user?.id === report?.interview?.interviewer_id;
   const dashboardPath = isInterviewer ? '/interviewer/dashboard' : '/candidate/dashboard';
 
-  // EVALUATION PENDING STATE: Interview completed, but interviewer has not submitted evaluation yet
+  const isAiSession = Boolean(report?.interview?.is_ai);
+
+  // EVALUATION PENDING / IN-FLIGHT STATE
   if (report?.isPending || (!report?.evaluation && report?.interview?.status === 'completed')) {
+    // 1. Peer interview pending human evaluation
+    if (!isAiSession) {
+      return (
+        <div className="container" style={{ padding: '5rem 1.5rem', maxWidth: '640px' }}>
+          <div
+            className="card"
+            style={{
+              padding: '3rem 2.5rem',
+              textAlign: 'center',
+              background: '#111827',
+              border: '1px solid rgba(245, 158, 11, 0.3)',
+              borderRadius: 'var(--radius-lg)',
+              boxShadow: '0 8px 30px rgba(0,0,0,0.3)',
+            }}
+          >
+            <div
+              style={{
+                width: '64px',
+                height: '64px',
+                borderRadius: '50%',
+                background: 'rgba(245, 158, 11, 0.15)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                margin: '0 auto 1.5rem auto',
+                border: '1px solid rgba(245, 158, 11, 0.3)',
+              }}
+            >
+              <Clock size={32} color="#f59e0b" />
+            </div>
+
+            <div className="badge badge-success" style={{ margin: '0 auto 1rem auto' }}>
+              Interview Completed
+            </div>
+
+            <h2 style={{ fontSize: '1.6rem', marginBottom: '0.5rem', color: '#f9fafb' }}>
+              Evaluation: <span style={{ color: '#f59e0b' }}>Pending</span>
+            </h2>
+
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.975rem', lineHeight: '1.6', marginBottom: '1.75rem' }}>
+              The interviewer has not submitted the final evaluation yet.
+            </p>
+
+            <div
+              style={{
+                background: 'rgba(0,0,0,0.25)',
+                borderRadius: 'var(--radius-md)',
+                padding: '1rem',
+                marginBottom: '2rem',
+                border: '1px solid rgba(255,255,255,0.06)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '0.6rem',
+                fontSize: '0.85rem',
+                color: '#94a3b8',
+              }}
+            >
+              <Sparkles size={16} color="#818cf8" style={{ animation: 'pulse 1.5s infinite' }} />
+              <span>This page updates automatically in real-time when the interviewer submits the evaluation.</span>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'center', gap: '0.75rem' }}>
+              <Link to={dashboardPath} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                <ArrowLeft size={16} />
+                <span>Back to Past Interviews</span>
+              </Link>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // 2. AI interview evaluation finalizing / ready to generate
     return (
       <div className="container" style={{ padding: '5rem 1.5rem', maxWidth: '640px' }}>
         <div
@@ -144,9 +245,9 @@ export default function InterviewResultsPage() {
             padding: '3rem 2.5rem',
             textAlign: 'center',
             background: '#111827',
-            border: '1px solid rgba(245, 158, 11, 0.3)',
+            border: '1px solid rgba(99, 102, 241, 0.4)',
             borderRadius: 'var(--radius-lg)',
-            boxShadow: '0 8px 30px rgba(0,0,0,0.3)',
+            boxShadow: '0 8px 30px rgba(0,0,0,0.4)',
           }}
         >
           <div
@@ -154,15 +255,15 @@ export default function InterviewResultsPage() {
               width: '64px',
               height: '64px',
               borderRadius: '50%',
-              background: 'rgba(245, 158, 11, 0.15)',
+              background: 'rgba(99, 102, 241, 0.15)',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
               margin: '0 auto 1.5rem auto',
-              border: '1px solid rgba(245, 158, 11, 0.3)',
+              border: '1px solid rgba(99, 102, 241, 0.4)',
             }}
           >
-            <Clock size={32} color="#f59e0b" />
+            <Sparkles size={32} color="#818cf8" style={{ animation: retryingAiEval ? 'spin 1.5s linear infinite' : 'pulse 1.5s infinite' }} />
           </div>
 
           <div className="badge badge-success" style={{ margin: '0 auto 1rem auto' }}>
@@ -170,37 +271,27 @@ export default function InterviewResultsPage() {
           </div>
 
           <h2 style={{ fontSize: '1.6rem', marginBottom: '0.5rem', color: '#f9fafb' }}>
-            Evaluation: <span style={{ color: '#f59e0b' }}>Pending</span>
+            AI Evaluation Report
           </h2>
 
           <p style={{ color: 'var(--text-secondary)', fontSize: '0.975rem', lineHeight: '1.6', marginBottom: '1.75rem' }}>
-            The interviewer has not submitted the final evaluation yet.
+            Your interview has concluded. The AI evaluation is finalizing its evidence-based scoring and feedback.
           </p>
 
-          <div
-            style={{
-              background: 'rgba(0,0,0,0.25)',
-              borderRadius: 'var(--radius-md)',
-              padding: '1rem',
-              marginBottom: '2rem',
-              border: '1px solid rgba(255,255,255,0.06)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: '0.6rem',
-              fontSize: '0.85rem',
-              color: '#94a3b8',
-            }}
-          >
-            <Sparkles size={16} color="#818cf8" style={{ animation: 'pulse 1.5s infinite' }} />
-            <span>This page updates automatically in real-time when the interviewer submits the evaluation.</span>
-          </div>
-
           <div style={{ display: 'flex', justifyContent: 'center', gap: '0.75rem' }}>
-            <Link to={dashboardPath} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+            <Link to={dashboardPath} className="btn btn-outline" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
               <ArrowLeft size={16} />
-              <span>Back to Past Interviews</span>
+              <span>Back to Dashboard</span>
             </Link>
+            <button
+              onClick={handleRetryAiEval}
+              disabled={retryingAiEval}
+              className="btn btn-primary"
+              style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+            >
+              <RotateCcw size={16} className={retryingAiEval ? 'spin' : ''} />
+              <span>{retryingAiEval ? 'Generating Evaluation...' : 'Load / Generate Evaluation'}</span>
+            </button>
           </div>
         </div>
       </div>

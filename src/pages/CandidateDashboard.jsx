@@ -27,117 +27,8 @@ import {
 import ReviewModal from '../components/interview/ReviewModal';
 import LiveNowSection from '../components/interview/LiveNowSection';
 import { hasResume as checkHasResume, getCandidateResume } from '../services/resumeService';
-
-function formatScheduledCountdown(targetMs, nowMs) {
-  const diff = Math.max(0, targetMs - nowMs);
-  const totalSecs = Math.floor(diff / 1000);
-  const days = Math.floor(totalSecs / 86400);
-  const hours = Math.floor((totalSecs % 86400) / 3600);
-  const minutes = Math.floor((totalSecs % 3600) / 60);
-  const seconds = totalSecs % 60;
-
-  const pad = (n) => String(n).padStart(2, '0');
-  if (days > 0) {
-    return `${days}d ${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
-  }
-  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
-}
-
-export function CandidateScheduledInterviewCard({ item, now }) {
-  const targetTime = new Date(item.start_time).getTime();
-  const countdownText = formatScheduledCountdown(targetTime, now);
-  const startDate = new Date(item.start_time);
-  const formattedDate = startDate.toLocaleDateString(undefined, {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  });
-  const formattedTime = startDate.toLocaleTimeString(undefined, {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true,
-  });
-
-  return (
-    <div
-      className="card"
-      style={{
-        marginBottom: '1.5rem',
-        background: 'rgba(168, 85, 247, 0.08)',
-        border: '1px solid rgba(168, 85, 247, 0.4)',
-        boxShadow: '0 0 20px rgba(168, 85, 247, 0.15)',
-        padding: '1.5rem',
-      }}
-    >
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          flexWrap: 'wrap',
-          gap: '1.25rem',
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: '1rem' }}>
-          <div
-            style={{
-              width: 48,
-              height: 48,
-              borderRadius: 'var(--radius-md)',
-              background: 'rgba(168, 85, 247, 0.2)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: '#c084fc',
-              flexShrink: 0,
-            }}
-          >
-            <Calendar size={24} />
-          </div>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', marginBottom: '0.35rem' }}>
-              <span style={{ textTransform: 'uppercase', letterSpacing: '0.06em', fontSize: '0.8rem', fontWeight: 800, color: '#c084fc' }}>
-                Upcoming Interview
-              </span>
-              <span className="badge badge-secondary" style={{ background: 'rgba(168, 85, 247, 0.2)', color: '#d8b4fe' }}>
-                Scheduled
-              </span>
-            </div>
-            <div style={{ fontSize: '1.15rem', fontWeight: 700, color: '#fff', marginBottom: '0.4rem' }}>
-              Interviewer: <span style={{ color: '#e9d5ff' }}>{item.interviewer_name || 'Assigned Interviewer'}</span>
-            </div>
-            <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', display: 'flex', gap: '1.25rem', flexWrap: 'wrap' }}>
-              <span>Date: <strong style={{ color: 'var(--text-primary)' }}>{formattedDate}</strong></span>
-              <span>Time: <strong style={{ color: 'var(--text-primary)' }}>{formattedTime}</strong></span>
-              {item.duration && (
-                <span>Duration: <strong style={{ color: 'var(--text-primary)' }}>{item.duration} mins</strong></span>
-              )}
-              {item.join_code && (
-                <span>Join Code: <strong style={{ fontFamily: 'var(--font-mono)', color: 'var(--text-primary)' }}>{item.join_code}</strong></span>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem', flexWrap: 'wrap' }}>
-          <div style={{ textAlign: 'center', background: 'rgba(0,0,0,0.35)', padding: '0.5rem 1.15rem', borderRadius: 'var(--radius-sm)', border: '1px solid rgba(168, 85, 247, 0.3)' }}>
-            <div style={{ fontSize: '0.72rem', color: '#c084fc', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.15rem' }}>
-              Starts in:
-            </div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: '1.4rem', fontWeight: 800, color: '#e9d5ff' }}>
-              {countdownText}
-            </div>
-          </div>
-
-          <Link to={`/interview/${item.id}`} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.65rem 1.25rem' }}>
-            <Play size={16} />
-            <span style={{ fontWeight: 700 }}>Enter Waiting Room</span>
-          </Link>
-        </div>
-      </div>
-    </div>
-  );
-}
+import { concludeActiveAIInterview } from '../services/candidateService';
+import CandidateScheduledInterviewCard, { formatScheduledCountdown } from '../components/interview/CandidateScheduledInterviewCard';
 
 export default function CandidateDashboard() {
   const { user, profile } = useAuth();
@@ -158,6 +49,29 @@ export default function CandidateDashboard() {
   const [actionError, setActionError] = useState('');
   const [reviewingInterview, setReviewingInterview] = useState(null);
   const [candidateHasResume, setCandidateHasResume] = useState(true);
+  const [cancelTargetRequest, setCancelTargetRequest] = useState(null);
+  const [cancellingRequestId, setCancellingRequestId] = useState(null);
+  const [optimisticCancelledIds, setOptimisticCancelledIds] = useState(new Set());
+  const [successMessage, setSuccessMessage] = useState('');
+  const [concludingAiId, setConcludingAiId] = useState(null);
+
+  const handleConcludeAI = async (interviewId) => {
+    if (!interviewId || !user?.id || concludingAiId) return;
+    setConcludingAiId(interviewId);
+    setActionError('');
+    try {
+      const { error: concErr } = await concludeActiveAIInterview(interviewId, user.id);
+      if (concErr) throw concErr;
+      setSuccessMessage('AI Interview session concluded.');
+      refresh();
+    } catch (err) {
+      console.error('[CandidateDashboard] Failed to conclude AI interview:', err);
+      setActionError(err.message || 'Failed to conclude active AI interview');
+    } finally {
+      setConcludingAiId(null);
+    }
+  };
+
 
   useEffect(() => {
     if (user?.id) {
@@ -190,18 +104,23 @@ export default function CandidateDashboard() {
   const completedInterviews = myInterviews.filter((i) => i.status === 'completed');
 
   // Helper to match interview for a request
+  // Helper to match interview for a request
+  // Helper to match interview for a request strictly via authoritative identifiers
   const getLinkedInterview = (req) => {
-    return myInterviews.find(
-      (i) =>
-        (req.interview_id && i.id === req.interview_id) ||
-        (i.request_id && i.request_id === req.id) ||
-        (i.interviewer_id === req.interviewer_id && ['scheduled', 'waiting', 'active', 'completed'].includes(i.status))
-    );
+    if (!req) return null;
+    if (req.interview_id) {
+      const match = myInterviews.find((i) => i.id === req.interview_id);
+      if (match) return match;
+    }
+    return myInterviews.find((i) => i.request_id && i.request_id === req.id) || null;
   };
 
   // Filter requests for Tab 2: Show only current active requests
   // Completed or cancelled interviews belong strictly in History tab
   const currentRequests = requests.filter((req) => {
+    if (optimisticCancelledIds.has(req.id)) {
+      return false;
+    }
     const linked = getLinkedInterview(req);
     if (linked && (linked.status === 'completed' || linked.status === 'cancelled')) {
       return false;
@@ -215,12 +134,38 @@ export default function CandidateDashboard() {
   const pendingRequests = currentRequests.filter((r) => r.status === 'pending');
   const acceptedRequests = currentRequests.filter((r) => r.status === 'accepted');
 
-  const handleCancel = async (requestId) => {
+  const handleCancel = (requestOrId) => {
+    setActionError('');
+    if (typeof requestOrId === 'object' && requestOrId !== null) {
+      setCancelTargetRequest(requestOrId);
+    } else {
+      const found = requests.find((r) => r.id === requestOrId);
+      setCancelTargetRequest(found || { id: requestOrId });
+    }
+  };
+
+  const handleConfirmCancel = async (requestId) => {
+    if (!requestId) return;
+    setCancellingRequestId(requestId);
     setActionError('');
     try {
+      // Optimistic removal from UI
+      setOptimisticCancelledIds((prev) => new Set([...prev, requestId]));
       await cancelRequest(requestId);
+      setCancelTargetRequest(null);
+      setSuccessMessage('Interview request cancelled successfully.');
+      setTimeout(() => setSuccessMessage(''), 5000);
     } catch (err) {
+      // Rollback optimistic removal
+      setOptimisticCancelledIds((prev) => {
+        const next = new Set(prev);
+        next.delete(requestId);
+        return next;
+      });
       setActionError(err.message || 'Failed to cancel request.');
+      setCancelTargetRequest(null);
+    } finally {
+      setCancellingRequestId(null);
     }
   };
 
@@ -337,12 +282,14 @@ export default function CandidateDashboard() {
         <div style={{ marginBottom: '2rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           {activeInterviews.map((item) => (
             <div 
-              key={item.id}
+              key={item.id} 
               className="card" 
               style={{ 
-                background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(6, 182, 212, 0.1) 100%)', 
-                border: '2px solid #10b981',
-                boxShadow: '0 0 25px rgba(16, 185, 129, 0.25)',
+                background: item.is_ai 
+                  ? 'linear-gradient(135deg, rgba(99, 102, 241, 0.15) 0%, rgba(139, 92, 246, 0.1) 100%)'
+                  : 'linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(6, 182, 212, 0.1) 100%)', 
+                border: item.is_ai ? '2px solid #6366f1' : '2px solid #10b981',
+                boxShadow: item.is_ai ? '0 0 25px rgba(99, 102, 241, 0.25)' : '0 0 25px rgba(16, 185, 129, 0.25)',
                 padding: '1.25rem 1.5rem',
               }}
             >
@@ -352,40 +299,62 @@ export default function CandidateDashboard() {
                     width: 46, 
                     height: 46, 
                     borderRadius: 'var(--radius-md)', 
-                    background: '#10b981', 
+                    background: item.is_ai ? 'linear-gradient(135deg, #6366f1, #8b5cf6)' : '#10b981', 
                     display: 'flex', 
                     alignItems: 'center', 
                     justifyContent: 'center', 
                     color: '#fff',
-                    boxShadow: '0 0 12px #10b981'
+                    boxShadow: item.is_ai ? '0 0 12px #6366f1' : '0 0 12px #10b981'
                   }}>
-                    <Video size={24} />
+                    {item.is_ai ? <Bot size={24} /> : <Video size={24} />}
                   </div>
                   <div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.2rem' }}>
-                      <span style={{ fontWeight: 800, fontSize: '1.15rem', color: '#6ee7b7' }}>
-                        My Active Interview in Progress!
+                      <span style={{ fontWeight: 800, fontSize: '1.15rem', color: item.is_ai ? '#a5b4fc' : '#6ee7b7' }}>
+                        {item.is_ai ? 'AI Mock Interview in Progress!' : 'My Active Interview in Progress!'}
                       </span>
                       <span className="badge badge-success" style={{ animation: 'pulse 1.5s infinite' }}>
                         In Session
                       </span>
                     </div>
                     <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
-                      Interviewer: <strong>{item.interviewer_name || 'Interviewer'}</strong> &bull; Join Code: <strong style={{ fontFamily: 'var(--font-mono)' }}>{item.join_code}</strong>
+                      {item.is_ai ? (
+                        <span>MockMate AI Interviewer (Alex Vance) &bull; <strong style={{ color: '#a5b4fc' }}>{item.interview_type}</strong> &bull; {item.difficulty}</span>
+                      ) : (
+                        <span>Interviewer: <strong>{item.interviewer_name || 'Interviewer'}</strong> &bull; Join Code: <strong style={{ fontFamily: 'var(--font-mono)' }}>{item.join_code}</strong></span>
+                      )}
                     </div>
                   </div>
                 </div>
 
-                <Link to={`/interview/${item.id}`} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 1.25rem' }}>
-                  <Play size={18} />
-                  <span style={{ fontWeight: 700 }}>Enter My Interview</span>
-                </Link>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  {item.is_ai ? (
+                    <>
+                      <button
+                        onClick={() => handleConcludeAI(item.id)}
+                        disabled={concludingAiId === item.id}
+                        className="btn btn-outline btn-sm"
+                        style={{ borderColor: 'rgba(239, 68, 68, 0.5)', color: '#f87171' }}
+                      >
+                        {concludingAiId === item.id ? 'Concluding...' : 'Finish & Conclude'}
+                      </button>
+                      <Link to="/interview/ai" className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 1.25rem' }}>
+                        <Play size={18} />
+                        <span style={{ fontWeight: 700 }}>Resume AI Interview</span>
+                      </Link>
+                    </>
+                  ) : (
+                    <Link to={`/interview/${item.id}`} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 1.25rem' }}>
+                      <Play size={18} />
+                      <span style={{ fontWeight: 700 }}>Enter My Interview</span>
+                    </Link>
+                  )}
+                </div>
               </div>
             </div>
           ))}
         </div>
       )}
-
       {/* 2. PRIORITY ALERTS: SCHEDULED INTERVIEWS WITH LIVE REALTIME COUNTDOWN */}
       {scheduledInterviews.length > 0 && activeInterviews.length === 0 && (
         <div style={{ marginBottom: '2rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -490,7 +459,7 @@ export default function CandidateDashboard() {
       )}
 
       {/* 5. PRIORITY ALERTS: PENDING INTERVIEW REQUESTS SENT */}
-      {pendingRequests.length > 0 && activeInterviews.length === 0 && scheduledInterviews.length === 0 && waitingInterviews.length === 0 && unscheduledInterviews.length === 0 && (
+      {pendingRequests.length > 0 && (
         <div style={{ marginBottom: '2rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           {pendingRequests.map((req) => (
             <div 
@@ -523,7 +492,7 @@ export default function CandidateDashboard() {
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
                   <button
-                    onClick={() => handleCancel(req.id)}
+                    onClick={() => handleCancel(req)}
                     className="btn btn-outline btn-sm"
                     style={{ color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.3)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
                   >
@@ -747,10 +716,29 @@ export default function CandidateDashboard() {
                           <span>Join Code: <strong style={{ fontFamily: 'var(--font-mono)', color: '#38bdf8' }}>{item.join_code}</strong></span>
                         </div>
                       </div>
-                      <Link to={`/interview/${item.id}`} className="btn btn-primary btn-sm" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                        <Play size={14} />
-                        <span>Enter My Interview</span>
-                      </Link>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        {item.is_ai ? (
+                          <>
+                            <button
+                              onClick={() => handleConcludeAI(item.id)}
+                              disabled={concludingAiId === item.id}
+                              className="btn btn-outline btn-sm"
+                              style={{ borderColor: 'rgba(239, 68, 68, 0.5)', color: '#f87171' }}
+                            >
+                              {concludingAiId === item.id ? 'Concluding...' : 'Finish & Conclude'}
+                            </button>
+                            <Link to="/interview/ai" className="btn btn-primary btn-sm" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                              <Play size={14} />
+                              <span>Resume AI Interview</span>
+                            </Link>
+                          </>
+                        ) : (
+                          <Link to={`/interview/${item.id}`} className="btn btn-primary btn-sm" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                            <Play size={14} />
+                            <span>Enter My Interview</span>
+                          </Link>
+                        )}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -862,8 +850,67 @@ export default function CandidateDashboard() {
               </div>
             )}
 
+            {/* 4. PENDING INTERVIEW REQUESTS (Directly visible in All Interviews) */}
+            {pendingRequests.length > 0 && (
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.75rem' }}>
+                  <Clock size={16} color="#f59e0b" />
+                  <h3 style={{ fontSize: '1.1rem', color: '#f59e0b', margin: 0, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                    Pending Interview Requests ({pendingRequests.length})
+                  </h3>
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                  {pendingRequests.map((req) => (
+                    <div
+                      key={req.id}
+                      className="card"
+                      style={{
+                        background: 'rgba(245, 158, 11, 0.08)',
+                        borderRadius: 'var(--radius-md)',
+                        padding: '1.25rem 1.5rem',
+                        border: '1px solid rgba(245, 158, 11, 0.4)',
+                        boxShadow: '0 0 15px rgba(245, 158, 11, 0.1)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        flexWrap: 'wrap',
+                        gap: '1rem',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                        <div style={{ width: 42, height: 42, borderRadius: 'var(--radius-md)', background: 'rgba(245, 158, 11, 0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#f59e0b' }}>
+                          <Clock size={22} />
+                        </div>
+                        <div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.2rem' }}>
+                            <span style={{ fontWeight: 700, fontSize: '1.05rem', color: '#fbbf24' }}>
+                              Interview Request
+                            </span>
+                            <span className="badge badge-warning">Status: Pending</span>
+                          </div>
+                          <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                            Interviewer: <strong>{req.interviewer?.full_name || 'Verified Interviewer'}</strong> &bull; Sent: <strong>{new Date(req.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {new Date(req.created_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</strong>
+                          </div>
+                        </div>
+                      </div>
+                      <div>
+                        <button
+                          onClick={() => handleCancel(req)}
+                          className="btn btn-outline btn-sm"
+                          style={{ color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.4)', display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 600 }}
+                        >
+                          <XCircle size={15} />
+                          <span>Cancel Request</span>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {/* Empty State for Active/Upcoming */}
-            {activeInterviews.length === 0 && waitingInterviews.length === 0 && scheduledInterviews.length === 0 && (
+            {activeInterviews.length === 0 && waitingInterviews.length === 0 && scheduledInterviews.length === 0 && pendingRequests.length === 0 && (
               <div style={{ textAlign: 'center', padding: '3.5rem 1rem', color: 'var(--text-secondary)' }}>
                 <Video size={36} color="var(--border-subtle)" style={{ margin: '0 auto 0.75rem auto' }} />
                 <p style={{ fontWeight: 600 }}>No live or upcoming interviews right now.</p>
@@ -1014,15 +1061,64 @@ export default function CandidateDashboard() {
                     );
                   }
 
-                  // 4. Default request row: Pending ("Request Sent") or Accepted awaiting schedule (NO countdown, NO Enter button)
+                  // 4. Pending Request Card with prominent Cancel Request button
+                  if (req.status === 'pending') {
+                    return (
+                      <div
+                        key={req.id}
+                        className="card"
+                        style={{
+                          background: 'rgba(245, 158, 11, 0.08)',
+                          borderRadius: 'var(--radius-md)',
+                          padding: '1.25rem 1.5rem',
+                          border: '1px solid rgba(245, 158, 11, 0.4)',
+                          boxShadow: '0 0 15px rgba(245, 158, 11, 0.1)',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          flexWrap: 'wrap',
+                          gap: '1rem'
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                          <div style={{ width: 42, height: 42, borderRadius: 'var(--radius-md)', background: 'rgba(245, 158, 11, 0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#f59e0b' }}>
+                            <Clock size={22} />
+                          </div>
+                          <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.2rem' }}>
+                              <span style={{ fontWeight: 700, fontSize: '1.05rem', color: '#fbbf24' }}>
+                                Interview Request
+                              </span>
+                              <span className="badge badge-warning">Status: Pending</span>
+                            </div>
+                            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                              Interviewer: <strong>{req.interviewer?.full_name || 'Verified Interviewer'}</strong> &bull; Sent: <strong>{new Date(req.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} at {new Date(req.created_at).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</strong>
+                            </div>
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                          <button
+                            onClick={() => handleCancel(req)}
+                            className="btn btn-outline btn-sm"
+                            style={{ color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.4)', display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 600 }}
+                          >
+                            <XCircle size={15} />
+                            <span>Cancel Request</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  // 5. Accepted awaiting schedule (Cancel Request is NOT visible)
                   return (
-                    <div 
+                    <div
                       key={req.id}
                       style={{
                         background: 'var(--bg-input)',
                         borderRadius: 'var(--radius-md)',
                         padding: '1.25rem',
-                        border: req.status === 'accepted' ? '1px solid rgba(16, 185, 129, 0.4)' : req.status === 'pending' ? '1px solid rgba(245, 158, 11, 0.4)' : '1px solid var(--border-subtle)',
+                        border: '1px solid rgba(16, 185, 129, 0.4)',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'space-between',
@@ -1035,37 +1131,21 @@ export default function CandidateDashboard() {
                           <span style={{ fontWeight: 700 }}>
                             Interviewer: {req.interviewer?.full_name || 'Verified Interviewer'}
                           </span>
-                          <span className={`badge ${req.status === 'accepted' ? 'badge-success' : req.status === 'pending' ? 'badge-warning' : 'badge-danger'}`}>
-                            {req.status === 'accepted' ? 'Accepted · Awaiting Schedule' : req.status === 'pending' ? 'Request Sent' : req.status}
+                          <span className="badge badge-success">
+                            Accepted · Awaiting Schedule
                           </span>
                         </div>
                         <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                          {req.status === 'accepted' 
-                            ? 'Interviewer has accepted your request and will schedule the session date and time shortly.'
-                            : `Requested on ${new Date(req.created_at).toLocaleString()}`
-                          }
-                          {req.responded_at && req.status !== 'accepted' && ` • Responded: ${new Date(req.responded_at).toLocaleString()}`}
+                          Interviewer has accepted your request and will schedule the session date and time shortly.
                         </div>
                       </div>
-
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                        {req.join_code && (
+                      {req.join_code && (
+                        <div style={{ display: 'flex', alignItems: 'center' }}>
                           <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', background: 'rgba(255,255,255,0.05)', padding: '0.35rem 0.65rem', borderRadius: 'var(--radius-sm)' }}>
                             Code: {req.join_code}
                           </span>
-                        )}
-
-                        {req.status === 'pending' && (
-                          <button
-                            onClick={() => handleCancel(req.id)}
-                            className="btn btn-outline btn-sm"
-                            style={{ color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.3)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
-                          >
-                            <XCircle size={15} />
-                            <span>Cancel Request</span>
-                          </button>
-                        )}
-                      </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })}
@@ -1151,6 +1231,82 @@ export default function CandidateDashboard() {
           </div>
         )}
       </div>
+
+      {/* Candidate Request Cancellation Confirmation Modal */}
+      {cancelTargetRequest && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.75)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 9999,
+            padding: '1.25rem',
+            backdropFilter: 'blur(4px)',
+          }}
+        >
+          <div
+            className="card"
+            style={{
+              maxWidth: '460px',
+              width: '100%',
+              background: '#131722',
+              border: '1px solid rgba(239, 68, 68, 0.4)',
+              boxShadow: '0 20px 50px rgba(0, 0, 0, 0.7)',
+              padding: '1.75rem',
+              borderRadius: 'var(--radius-lg, 12px)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
+              <div
+                style={{
+                  width: 44,
+                  height: 44,
+                  borderRadius: '50%',
+                  background: 'rgba(239, 68, 68, 0.15)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#ef4444',
+                  flexShrink: 0,
+                }}
+              >
+                <AlertCircle size={24} />
+              </div>
+              <h3 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+                Cancel this interview request?
+              </h3>
+            </div>
+            <p style={{ color: 'var(--text-secondary)', fontSize: '0.95rem', lineHeight: 1.5, marginBottom: '1.75rem' }}>
+              This will withdraw your request from the interviewer.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.85rem' }}>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setCancelTargetRequest(null)}
+                disabled={Boolean(cancellingRequestId)}
+              >
+                Keep Request
+              </button>
+              <button
+                type="button"
+                className="btn btn-danger"
+                style={{ background: '#ef4444', borderColor: '#dc2626', color: '#fff', fontWeight: 700 }}
+                onClick={() => handleConfirmCancel(cancelTargetRequest.id)}
+                disabled={Boolean(cancellingRequestId)}
+              >
+                {cancellingRequestId ? 'Cancelling...' : 'Cancel Request'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Review Modal if Candidate clicks Rate Interviewer */}
       {reviewingInterview && (

@@ -4,8 +4,12 @@ import { getApiBaseUrl } from '../utils/apiConfig';
 /**
  * Triggers AI evaluation for a completed interview via backend Gemini service.
  * Accepts optional authoritative transcript, qaHistory, and codeSnapshot.
+ * Enforces a 30s client-side timeout so requests never hang indefinitely.
  */
-export async function requestEvaluation(interviewId, { transcript = [], qaHistory = [], codeSnapshot = '' } = {}) {
+export async function requestEvaluation(
+  interviewId,
+  { transcript = [], qaHistory = [], codeSnapshot = '', codingOutcome = 'incomplete' } = {}
+) {
   if (!interviewId) throw new Error('Interview ID is required');
 
   const apiBase = getApiBaseUrl();
@@ -14,11 +18,13 @@ export async function requestEvaluation(interviewId, { transcript = [], qaHistor
     headers: {
       'Content-Type': 'application/json',
     },
+    signal: AbortSignal.timeout(30000),
     body: JSON.stringify({
       interviewId,
       transcript,
       qaHistory,
       codeSnapshot,
+      codingOutcome,
     }),
   });
 
@@ -31,8 +37,14 @@ export async function requestEvaluation(interviewId, { transcript = [], qaHistor
 }
 
 /**
+ * Helper to pause execution for a given number of milliseconds.
+ */
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
  * Retrieves full evaluation and interview record for the results report page.
- * If evaluation is not yet generated, triggers generation automatically.
+ * If evaluation was just submitted, retries briefly to allow database persistence.
+ * For AI interviews, triggers backend generation if evaluation is missing.
  */
 export async function getInterviewEvaluation(interviewId) {
   if (!interviewId) return { error: 'Interview ID is required' };
@@ -44,15 +56,23 @@ export async function getInterviewEvaluation(interviewId) {
     let submissions = [];
 
     if (supabase) {
-      // 1. Fetch interview row
-      const { data: intData, error: intErr } = await supabase
-        .from('interviews')
-        .select('*')
-        .eq('id', interviewId)
-        .single();
+      // 1. Fetch interview row (with retry up to 2 times if evaluation is pending persistence)
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const { data: intData, error: intErr } = await supabase
+          .from('interviews')
+          .select('*')
+          .eq('id', interviewId)
+          .single();
 
-      if (!intErr && intData) {
-        interview = intData;
+        if (!intErr && intData) {
+          interview = intData;
+          if (interview.evaluation || !interview.is_ai) {
+            break;
+          }
+        }
+        if (attempt < 2) {
+          await sleep(800);
+        }
       }
 
       // 2. Fetch questions
@@ -64,7 +84,7 @@ export async function getInterviewEvaluation(interviewId) {
 
       if (qData) questions = qData;
 
-      // 3. Fetch answers
+      // 3. Fetch candidate answers
       const { data: aData } = await supabase
         .from('interview_answers')
         .select('*')
@@ -72,7 +92,7 @@ export async function getInterviewEvaluation(interviewId) {
 
       if (aData) answers = aData;
 
-      // 4. Fetch submissions
+      // 4. Fetch code submissions
       const { data: sData } = await supabase
         .from('code_submissions')
         .select('*')
@@ -82,12 +102,16 @@ export async function getInterviewEvaluation(interviewId) {
       if (sData) submissions = sData;
     }
 
-    // If evaluation is already present in DB
+    // A. If evaluation is already present in DB
     if (interview?.evaluation) {
+      const parsedEvaluation = typeof interview.evaluation === 'string'
+        ? JSON.parse(interview.evaluation)
+        : interview.evaluation;
+
       return {
         interview,
-        evaluation: interview.evaluation,
-        score: interview.score,
+        evaluation: parsedEvaluation,
+        score: interview.score ?? parsedEvaluation?.overallScore,
         questions,
         answers,
         submissions,
@@ -95,7 +119,7 @@ export async function getInterviewEvaluation(interviewId) {
       };
     }
 
-    // If it is a peer interview and interviewer has not submitted an evaluation yet
+    // B. If it is a peer interview and human interviewer has not submitted an evaluation yet
     if (interview && !interview.is_ai) {
       return {
         interview,
@@ -108,12 +132,12 @@ export async function getInterviewEvaluation(interviewId) {
       };
     }
 
-    // Otherwise, for AI interviews only, trigger evaluation from backend
+    // C. For AI interviews only: trigger generation from backend
     const evalRes = await requestEvaluation(interviewId);
     return {
-      interview: interview || { id: interviewId },
+      interview: interview || { id: interviewId, is_ai: true },
       evaluation: evalRes.evaluation,
-      score: evalRes.score,
+      score: evalRes.score ?? evalRes.evaluation?.overallScore,
       questions,
       answers,
       submissions,

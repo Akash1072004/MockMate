@@ -18,6 +18,7 @@ router.post('/', async (req, res, next) => {
       transcript = [],
       qaHistory = [],
       codeSnapshot = '',
+      codingOutcome = 'incomplete',
     } = req.body || {};
 
     if (!interviewId || typeof interviewId !== 'string' || !UUID_REGEX.test(interviewId.trim())) {
@@ -102,10 +103,11 @@ router.post('/', async (req, res, next) => {
       transcript,
       qaHistory,
       codeSnapshot,
+      codingOutcome,
     });
 
-    // Save to database
-    if (supabaseAdmin && interview) {
+    // Save to database directly using cleanInterviewId
+    if (supabaseAdmin) {
       try {
         const { error: updateErr } = await supabaseAdmin
           .from('interviews')
@@ -114,19 +116,21 @@ router.post('/', async (req, res, next) => {
             score: evaluation.overallScore,
             status: 'completed',
             completion_time: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
           })
           .eq('id', cleanInterviewId);
 
         if (updateErr) {
-          console.warn('[API /api/evaluate] Database update warning:', updateErr.message);
+          console.error('[API /api/evaluate] Database update error:', updateErr.message);
         }
       } catch (dbSaveErr) {
-        console.warn('[API /api/evaluate] Database update error:', dbSaveErr.message);
+        console.error('[API /api/evaluate] Database update exception:', dbSaveErr.message);
       }
     }
 
     return res.json({
       success: true,
+      interviewId: cleanInterviewId,
       evaluation,
       score: evaluation.overallScore,
     });
