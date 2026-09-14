@@ -22,9 +22,94 @@ export function useWebRTC({ interviewId, userId, userRole = 'candidate', enabled
 
   const managerRef = useRef(null);
   const isInitializingRef = useRef(false);
+  const isTeardownDoneRef = useRef(false);
+  const localStreamRef = useRef(null);
+
+  /**
+   * Centralized cleanup function: stops all hardware media tracks,
+   * closes RTCPeerConnection, removes Supabase signaling channel,
+   * and prevents reconnect attempts.
+   */
+  const stopMediaAndConnection = useCallback(() => {
+    isTeardownDoneRef.current = true;
+    isInitializingRef.current = false;
+
+    // Collect all local streams to ensure complete teardown
+    const streamsToStop = [
+      localStreamRef.current,
+      localStream,
+      managerRef.current?.localStream,
+      managerRef.current?.screenStream,
+    ].filter(Boolean);
+
+    streamsToStop.forEach((stream) => {
+      try {
+        if (typeof stream.getTracks === 'function') {
+          stream.getTracks().forEach((track) => {
+            try {
+              // 3. Disable track before stopping
+              track.enabled = false;
+              // 1 & 2. Stop track hardware
+              track.stop();
+            } catch (_) {}
+          });
+        }
+      } catch (_) {}
+    });
+
+    // 4 & 5. Remove/close RTCPeerConnection and close Supabase signaling channel
+    if (managerRef.current) {
+      try {
+        managerRef.current.cleanup();
+      } catch (_) {}
+      managerRef.current = null;
+    }
+
+    // 6. Clear localStream
+    localStreamRef.current = null;
+    setLocalStream(null);
+
+    // 7. Clear remoteStream
+    setRemoteStream(null);
+
+    // 8. Clear video elements srcObject across the document
+    if (typeof document !== 'undefined') {
+      try {
+        const videoEls = document.querySelectorAll('video');
+        videoEls.forEach((vid) => {
+          try {
+            if (vid.srcObject) {
+              if (typeof vid.srcObject.getTracks === 'function') {
+                vid.srcObject.getTracks().forEach((t) => {
+                  try {
+                    t.enabled = false;
+                    t.stop();
+                  } catch (_) {}
+                });
+              }
+              vid.srcObject = null;
+            }
+          } catch (_) {}
+        });
+      } catch (_) {}
+    }
+
+    // 9. Reset camera state
+    setIsCameraOn(false);
+
+    // 10. Reset microphone state
+    setIsMicOn(false);
+    setIsScreenSharing(false);
+
+    // 11. Reset connection state
+    setConnectionState('disconnected');
+    setSignalingState('idle');
+  }, [localStream]);
 
   const initWebRTC = useCallback(async () => {
     if (!interviewId || !userId || !enabled) return;
+    // 12. Prevent reconnect/initialization after completion
+    if (isTeardownDoneRef.current) return;
     if (isInitializingRef.current) return;
     isInitializingRef.current = true;
 
@@ -62,10 +147,19 @@ export function useWebRTC({ interviewId, userId, userRole = 'candidate', enabled
     // Request camera and microphone access
     try {
       const stream = await manager.initLocalMedia({ video: true, audio: true });
-      if (stream) {
+      if (stream && !isTeardownDoneRef.current) {
+        localStreamRef.current = stream;
         setLocalStream(stream);
+        setIsCameraOn(true);
+        setIsMicOn(true);
         setPermissionStatus('granted');
         setPermissionError('');
+      } else if (stream && isTeardownDoneRef.current) {
+        // Guard if completion happened while getUserMedia was resolving
+        stream.getTracks().forEach((t) => {
+          t.enabled = false;
+          t.stop();
+        });
       }
     } catch (err) {
       console.error('[useWebRTC] Permission error:', err);
@@ -73,24 +167,25 @@ export function useWebRTC({ interviewId, userId, userRole = 'candidate', enabled
       setPermissionError(mapMediaError(err));
     }
 
-    // Connect to isolated Supabase signaling channel
-    manager.initSignaling();
+    if (!isTeardownDoneRef.current) {
+      // Connect to isolated Supabase signaling channel
+      manager.initSignaling();
+    }
     isInitializingRef.current = false;
   }, [interviewId, userId, userRole, enabled]);
 
   useEffect(() => {
-    initWebRTC();
+    if (enabled) {
+      isTeardownDoneRef.current = false;
+      initWebRTC();
+    } else {
+      stopMediaAndConnection();
+    }
 
     return () => {
-      if (managerRef.current) {
-        managerRef.current.cleanup();
-        managerRef.current = null;
-      }
-      setLocalStream(null);
-      setRemoteStream(null);
-      setConnectionState('idle');
+      stopMediaAndConnection();
     };
-  }, [initWebRTC]);
+  }, [enabled, initWebRTC, stopMediaAndConnection]);
 
   const toggleCamera = () => {
     if (!managerRef.current) return;
@@ -122,13 +217,17 @@ export function useWebRTC({ interviewId, userId, userRole = 'candidate', enabled
 
   const requestMediaPermissions = async () => {
     if (!managerRef.current) {
+      isTeardownDoneRef.current = false;
       await initWebRTC();
       return;
     }
     try {
       const stream = await managerRef.current.initLocalMedia({ video: true, audio: true });
       if (stream) {
+        localStreamRef.current = stream;
         setLocalStream(stream);
+        setIsCameraOn(true);
+        setIsMicOn(true);
         setPermissionStatus('granted');
         setPermissionError('');
       }
@@ -152,8 +251,9 @@ export function useWebRTC({ interviewId, userId, userRole = 'candidate', enabled
     toggleCamera,
     toggleMic,
     toggleScreenShare,
-    stop,
-    cleanup: stop,
+    stopMediaAndConnection,
+    stop: stopMediaAndConnection,
+    cleanup: stopMediaAndConnection,
     requestMediaPermissions,
     reconnect: initWebRTC,
   };

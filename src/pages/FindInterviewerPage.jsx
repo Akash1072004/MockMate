@@ -91,8 +91,12 @@ export default function FindInterviewerPage() {
     loadInterviewers();
 
     fetchLiveSessions().then(sessions => setActiveLiveSessions(sessions));
-    const unsubscribe = subscribeToLiveSessions((sessions) => {
-      setActiveLiveSessions(sessions);
+    const unsubscribe = subscribeToLiveSessions((updaterOrSessions) => {
+      if (typeof updaterOrSessions === 'function') {
+        setActiveLiveSessions(updaterOrSessions);
+      } else if (Array.isArray(updaterOrSessions)) {
+        setActiveLiveSessions(updaterOrSessions);
+      }
     });
 
     // Realtime channel for candidate's own interviews & requests so completed/updated sessions sync immediately

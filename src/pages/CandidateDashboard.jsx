@@ -173,15 +173,16 @@ export default function CandidateDashboard() {
 
   const displayName = profile?.full_name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'Candidate';
 
-  // Categorize interviews and requests from database into explicit lifecycle states
-  const activeInterviews = interviews.filter((i) => i.status === 'active');
-  const scheduledInterviews = interviews.filter(
+  // Categorize interviews and requests strictly for current authenticated candidate
+  const myInterviews = interviews.filter((i) => i.candidate_id === user?.id);
+  const activeInterviews = myInterviews.filter((i) => i.status === 'active');
+  const scheduledInterviews = myInterviews.filter(
     (i) => (i.status === 'scheduled' || i.status === 'waiting') && i.start_time && new Date(i.start_time).getTime() > now
   );
-  const waitingInterviews = interviews.filter(
+  const waitingInterviews = myInterviews.filter(
     (i) => (i.status === 'waiting' || i.status === 'scheduled') && (!i.start_time || new Date(i.start_time).getTime() <= now)
   );
-  const completedInterviews = interviews.filter((i) => i.status === 'completed');
+  const completedInterviews = myInterviews.filter((i) => i.status === 'completed');
 
   const pendingRequests = requests.filter((r) => r.status === 'pending');
   const acceptedRequests = requests.filter((r) => r.status === 'accepted');
@@ -386,6 +387,54 @@ export default function CandidateDashboard() {
                     <Play size={15} />
                     <span>Enter Waiting Room</span>
                   </Link>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 4. PRIORITY ALERTS: PENDING INTERVIEW REQUESTS SENT */}
+      {pendingRequests.length > 0 && activeInterviews.length === 0 && scheduledInterviews.length === 0 && waitingInterviews.length === 0 && (
+        <div style={{ marginBottom: '2rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          {pendingRequests.map((req) => (
+            <div 
+              key={req.id}
+              className="card" 
+              style={{ 
+                background: 'rgba(245, 158, 11, 0.08)', 
+                border: '1px solid rgba(245, 158, 11, 0.4)',
+                boxShadow: '0 0 20px rgba(245, 158, 11, 0.15)',
+                padding: '1.25rem 1.5rem',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <div style={{ width: 42, height: 42, borderRadius: 'var(--radius-md)', background: 'rgba(245, 158, 11, 0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#f59e0b' }}>
+                    <Clock size={22} />
+                  </div>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.2rem' }}>
+                      <span style={{ fontWeight: 700, fontSize: '1.05rem', color: '#fbbf24' }}>
+                        Interview Request Sent
+                      </span>
+                      <span className="badge badge-warning">Request Pending</span>
+                    </div>
+                    <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                      Request sent to interviewer <strong>{req.interviewer?.full_name || 'Verified Interviewer'}</strong>. Once accepted and scheduled, your countdown will appear here.
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <button
+                    onClick={() => handleCancel(req.id)}
+                    className="btn btn-outline btn-sm"
+                    style={{ color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.3)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                  >
+                    <XCircle size={15} />
+                    <span>Cancel Request</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -762,69 +811,182 @@ export default function CandidateDashboard() {
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                {requests.map((req) => (
-                  <div 
-                    key={req.id}
-                    style={{
-                      background: 'var(--bg-input)',
-                      borderRadius: 'var(--radius-md)',
-                      padding: '1.25rem',
-                      border: req.status === 'accepted' ? '1px solid rgba(16, 185, 129, 0.4)' : req.status === 'pending' ? '1px solid rgba(245, 158, 11, 0.4)' : '1px solid var(--border-subtle)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      flexWrap: 'wrap',
-                      gap: '1rem'
-                    }}
-                  >
-                    <div>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
-                        <span style={{ fontWeight: 700 }}>
-                          Interviewer: {req.interviewer?.full_name || 'Verified Interviewer'}
-                        </span>
-                        <span className={`badge ${req.status === 'accepted' ? 'badge-success' : req.status === 'pending' ? 'badge-warning' : 'badge-danger'}`}>
-                          {req.status === 'accepted' ? 'Accepted' : req.status === 'pending' ? 'Pending' : req.status}
-                        </span>
+                {requests.map((req) => {
+                  const linkedInterview = myInterviews.find(
+                    (i) =>
+                      (req.interview_id && i.id === req.interview_id) ||
+                      (i.interviewer_id === req.interviewer_id && ['scheduled', 'waiting', 'active', 'completed'].includes(i.status))
+                  );
+
+                  // 1. If accepted and scheduled in future -> Show scheduled countdown card directly in place!
+                  if (
+                    req.status === 'accepted' &&
+                    linkedInterview?.start_time &&
+                    new Date(linkedInterview.start_time).getTime() > now &&
+                    linkedInterview?.status !== 'active'
+                  ) {
+                    return (
+                      <CandidateScheduledInterviewCard
+                        key={req.id}
+                        item={linkedInterview}
+                        now={now}
+                      />
+                    );
+                  }
+
+                  // 2. If accepted and active -> Show active interview in progress!
+                  if (req.status === 'accepted' && linkedInterview?.status === 'active') {
+                    return (
+                      <div
+                        key={req.id}
+                        className="card"
+                        style={{
+                          background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(6, 182, 212, 0.1) 100%)',
+                          border: '2px solid #10b981',
+                          boxShadow: '0 0 20px rgba(16, 185, 129, 0.2)',
+                          padding: '1.25rem 1.5rem',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                            <div style={{ width: 42, height: 42, borderRadius: 'var(--radius-md)', background: '#10b981', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff' }}>
+                              <Video size={22} />
+                            </div>
+                            <div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.2rem' }}>
+                                <span style={{ fontWeight: 800, fontSize: '1.05rem', color: '#6ee7b7' }}>
+                                  My Active Interview in Progress!
+                                </span>
+                                <span className="badge badge-success">In Session</span>
+                              </div>
+                              <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                                Interviewer: <strong>{linkedInterview.interviewer_name || req.interviewer?.full_name || 'Interviewer'}</strong>
+                                {linkedInterview.join_code && (
+                                  <> &bull; Join Code: <strong style={{ fontFamily: 'var(--font-mono)' }}>{linkedInterview.join_code}</strong></>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          <Link to={`/interview/${linkedInterview.id}`} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.6rem 1.25rem' }}>
+                            <Play size={16} />
+                            <span style={{ fontWeight: 700 }}>Enter My Interview</span>
+                          </Link>
+                        </div>
                       </div>
-                      <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                        Requested on {new Date(req.created_at).toLocaleString()}
-                        {req.responded_at && ` &bull; Responded: ${new Date(req.responded_at).toLocaleString()}`}
+                    );
+                  }
+
+                  // 3. If accepted and waiting / countdown reached 0 -> Show ready state (waiting room open, no media)
+                  if (
+                    req.status === 'accepted' &&
+                    linkedInterview &&
+                    (linkedInterview.status === 'waiting' || (linkedInterview.start_time && new Date(linkedInterview.start_time).getTime() <= now)) &&
+                    linkedInterview.status !== 'completed'
+                  ) {
+                    return (
+                      <div
+                        key={req.id}
+                        className="card"
+                        style={{
+                          background: 'rgba(99, 102, 241, 0.08)',
+                          border: '1px solid rgba(99, 102, 241, 0.4)',
+                          boxShadow: '0 0 15px rgba(99, 102, 241, 0.15)',
+                          padding: '1.25rem 1.5rem',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                            <div style={{ width: 42, height: 42, borderRadius: 'var(--radius-md)', background: 'rgba(99, 102, 241, 0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#818cf8' }}>
+                              <Clock size={22} />
+                            </div>
+                            <div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.2rem' }}>
+                                <span style={{ fontWeight: 700, fontSize: '1.05rem', color: '#a5b4fc' }}>
+                                  Interview is Ready
+                                </span>
+                                <span className="badge badge-warning">Waiting Room Open</span>
+                              </div>
+                              <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                                Interviewer <strong>{linkedInterview.interviewer_name || req.interviewer?.full_name || 'Interviewer'}</strong> is ready. Enter waiting room to prepare.
+                              </div>
+                            </div>
+                          </div>
+
+                          <Link to={`/interview/${linkedInterview.id}`} className="btn btn-primary btn-sm" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.55rem 1.15rem' }}>
+                            <Play size={15} />
+                            <span>Enter Waiting Room</span>
+                          </Link>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  // 4. Default request row: Pending ("Request Sent"), Accepted (unscheduled), Declined, Cancelled
+                  return (
+                    <div 
+                      key={req.id}
+                      style={{
+                        background: 'var(--bg-input)',
+                        borderRadius: 'var(--radius-md)',
+                        padding: '1.25rem',
+                        border: req.status === 'accepted' ? '1px solid rgba(16, 185, 129, 0.4)' : req.status === 'pending' ? '1px solid rgba(245, 158, 11, 0.4)' : '1px solid var(--border-subtle)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        flexWrap: 'wrap',
+                        gap: '1rem'
+                      }}
+                    >
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+                          <span style={{ fontWeight: 700 }}>
+                            Interviewer: {req.interviewer?.full_name || 'Verified Interviewer'}
+                          </span>
+                          <span className={`badge ${req.status === 'accepted' ? 'badge-success' : req.status === 'pending' ? 'badge-warning' : 'badge-danger'}`}>
+                            {req.status === 'accepted' ? 'Accepted · Awaiting Schedule' : req.status === 'pending' ? 'Request Sent' : req.status}
+                          </span>
+                        </div>
+                        <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                          Requested on {new Date(req.created_at).toLocaleString()}
+                          {req.responded_at && ` • Responded: ${new Date(req.responded_at).toLocaleString()}`}
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                        {req.join_code && (
+                          <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', background: 'rgba(255,255,255,0.05)', padding: '0.35rem 0.65rem', borderRadius: 'var(--radius-sm)' }}>
+                            Code: {req.join_code}
+                          </span>
+                        )}
+
+                        {req.status === 'pending' && (
+                          <button
+                            onClick={() => handleCancel(req.id)}
+                            className="btn btn-outline btn-sm"
+                            style={{ color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.3)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                          >
+                            <XCircle size={15} />
+                            <span>Cancel Request</span>
+                          </button>
+                        )}
+
+                        {req.status === 'accepted' && (req.interview_id || linkedInterview?.id) && (
+                          <Link to={`/interview/${req.interview_id || linkedInterview.id}`} className="btn btn-primary btn-sm" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                            <Play size={15} />
+                            <span>Enter Waiting Room</span>
+                          </Link>
+                        )}
+
+                        {req.status === 'declined' && (
+                          <Link to="/candidate/find-interviewer" className="btn btn-outline btn-sm">
+                            Find Another Interviewer
+                          </Link>
+                        )}
                       </div>
                     </div>
-
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                      {req.join_code && (
-                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', background: 'rgba(255,255,255,0.05)', padding: '0.35rem 0.65rem', borderRadius: 'var(--radius-sm)' }}>
-                          Code: {req.join_code}
-                        </span>
-                      )}
-
-                      {req.status === 'pending' && (
-                        <button
-                          onClick={() => handleCancel(req.id)}
-                          className="btn btn-outline btn-sm"
-                          style={{ color: '#ef4444', borderColor: 'rgba(239, 68, 68, 0.3)' }}
-                        >
-                          <XCircle size={15} />
-                          <span>Cancel Request</span>
-                        </button>
-                      )}
-
-                      {req.status === 'accepted' && req.interview_id && (
-                        <Link to={`/interview/${req.interview_id}`} className="btn btn-primary btn-sm">
-                          <Play size={15} />
-                          <span>Enter Room</span>
-                        </Link>
-                      )}
-
-                      {req.status === 'declined' && (
-                        <Link to="/candidate/find-interviewer" className="btn btn-outline btn-sm">
-                          Find Another
-                        </Link>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>

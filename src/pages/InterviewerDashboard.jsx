@@ -411,52 +411,58 @@ export default function InterviewerDashboard() {
         </div>
       )}
 
-      {/* 1. HIGH-PRIORITY ALERT: ACTIVE LIVE INTERVIEW */}
-      {activeInterviews.length > 0 && (
-        <div 
-          className="card" 
-          style={{ 
-            marginBottom: '2rem', 
-            background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(6, 182, 212, 0.1) 100%)', 
-            border: '2px solid #10b981',
-            boxShadow: '0 0 25px rgba(16, 185, 129, 0.25)'
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-              <div style={{ 
-                width: 46, 
-                height: 46, 
-                borderRadius: 'var(--radius-md)', 
-                background: '#10b981', 
-                display: 'flex', 
-                alignItems: 'center', 
-                justifyContent: 'center', 
-                color: '#fff',
-                boxShadow: '0 0 12px #10b981'
-              }}>
-                <Video size={24} />
-              </div>
-              <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.2rem' }}>
-                  <span style={{ fontWeight: 800, fontSize: '1.15rem', color: '#6ee7b7' }}>
-                    My Active Interview in Progress!
-                  </span>
-                  <span className="badge badge-success">In Session</span>
+      {/* 1. HIGH-PRIORITY ALERT: ACTIVE LIVE INTERVIEW (STRICT PARTICIPANT ID CHECK) */}
+      {interviews
+        .filter((item) => item.interviewer_id === user?.id && item.status === 'active')
+        .map((activeItem) => (
+          <div 
+            key={activeItem.id}
+            className="card" 
+            style={{ 
+              marginBottom: '2rem', 
+              background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(6, 182, 212, 0.1) 100%)', 
+              border: '2px solid #10b981',
+              boxShadow: '0 0 25px rgba(16, 185, 129, 0.25)'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                <div style={{ 
+                  width: 46, 
+                  height: 46, 
+                  borderRadius: 'var(--radius-md)', 
+                  background: '#10b981', 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  justifyContent: 'center', 
+                  color: '#fff',
+                  boxShadow: '0 0 12px #10b981'
+                }}>
+                  <Video size={24} />
                 </div>
-                <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
-                  Candidate: <strong>{activeInterviews[0].candidate_name}</strong> &bull; Join Code: <strong style={{ fontFamily: 'var(--font-mono)' }}>{activeInterviews[0].join_code}</strong>
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.2rem' }}>
+                    <span style={{ fontWeight: 800, fontSize: '1.15rem', color: '#6ee7b7' }}>
+                      My Active Interview in Progress!
+                    </span>
+                    <span className="badge badge-success">In Session</span>
+                  </div>
+                  <div style={{ fontSize: '0.9rem', color: 'var(--text-secondary)' }}>
+                    Candidate: <strong>{activeItem.candidate_name || 'Candidate'}</strong>
+                    {activeItem.join_code && (
+                      <> &bull; Join Code: <strong style={{ fontFamily: 'var(--font-mono)' }}>{activeItem.join_code}</strong></>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
 
-            <Link to={`/interview/${activeInterviews[0].id}`} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 1.25rem' }}>
-              <Play size={18} />
-              <span style={{ fontWeight: 700 }}>Enter My Interview</span>
-            </Link>
+              <Link to={`/interview/${activeItem.id}`} className="btn btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.6rem 1.25rem' }}>
+                <Play size={18} />
+                <span style={{ fontWeight: 700 }}>Enter My Interview</span>
+              </Link>
+            </div>
           </div>
-        </div>
-      )}
+        ))}
 
       {/* Metrics Row */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(210px, 1fr))', gap: '1.25rem', marginBottom: '2.5rem' }}>

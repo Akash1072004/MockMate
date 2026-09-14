@@ -248,16 +248,27 @@ export function subscribeToLiveSessions(onUpdate) {
         schema: 'public',
         table: 'interviews',
       },
-      () => {
-        // Re-fetch latest live sessions when any interview status changes
-        fetchLiveSessions().then(sessions => onUpdate(sessions));
+      (payload) => {
+        // 1. Immediate optimistic reconciliation on DELETE or status change away from active
+        if (payload.eventType === 'DELETE' && payload.old?.id) {
+          onUpdate((prev) => (Array.isArray(prev) ? prev.filter((s) => s.id !== payload.old.id) : []));
+        } else if (payload.eventType === 'UPDATE' && payload.new) {
+          if (payload.new.status !== 'active') {
+            onUpdate((prev) => (Array.isArray(prev) ? prev.filter((s) => s.id !== payload.new.id) : []));
+          }
+        }
+
+        // 2. Authoritative query re-sync from get_active_live_sessions RPC
+        fetchLiveSessions().then((sessions) => {
+          onUpdate(sessions);
+        });
       }
     )
     .subscribe();
 
   // Periodic polling fallback (every 10s)
   const pollInterval = setInterval(() => {
-    fetchLiveSessions().then(sessions => onUpdate(sessions));
+    fetchLiveSessions().then((sessions) => onUpdate(sessions));
   }, 10000);
 
   return () => {

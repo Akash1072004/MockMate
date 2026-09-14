@@ -161,9 +161,12 @@ export default function LiveNowSection({ title = 'Live Now', subtitle = 'Intervi
       }
     });
 
-    const unsubscribe = subscribeToLiveSessions((updatedSessions) => {
-      if (isMounted) {
-        setLiveSessions(updatedSessions);
+    const unsubscribe = subscribeToLiveSessions((updaterOrSessions) => {
+      if (!isMounted) return;
+      if (typeof updaterOrSessions === 'function') {
+        setLiveSessions(updaterOrSessions);
+      } else if (Array.isArray(updaterOrSessions)) {
+        setLiveSessions(updaterOrSessions);
       }
     });
 

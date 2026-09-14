@@ -260,6 +260,23 @@ function AuthorizedInterviewRoom({ interviewId, initialInterview, initialUserRol
     availableLanguages,
   });
 
+  // Keep latest webrtc reference for unmount cleanup without causing re-runs on rerenders
+  const webrtcRef = useRef(webrtc);
+  useEffect(() => {
+    webrtcRef.current = webrtc;
+  }, [webrtc]);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      webrtcRef.current?.stopMediaAndConnection?.();
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      webrtcRef.current?.stopMediaAndConnection?.();
+    };
+  }, []);
+
   // Load interview and verify participant authorization
   const loadInterview = async () => {
     if (!interviewId || !user?.id) return;
@@ -304,7 +321,7 @@ function AuthorizedInterviewRoom({ interviewId, initialInterview, initialUserRol
           if (payload.new) {
             if (payload.new.status === 'completed') {
               try {
-                webrtc?.stop?.();
+                webrtcRef.current?.stopMediaAndConnection?.();
               } catch (_) {}
               if (userRole === 'candidate') {
                 navigate(`/interview/results/${interviewId}`, { replace: true });
@@ -406,9 +423,7 @@ function AuthorizedInterviewRoom({ interviewId, initialInterview, initialUserRol
     if (userRole === 'interviewer') {
       if (window.confirm('End live interview session and proceed to candidate evaluation?')) {
         try {
-          try {
-            webrtc?.stop?.();
-          } catch (_) {}
+          webrtcRef.current?.stopMediaAndConnection?.();
           await updateInterviewStatus(interview.id, 'completed', user.id);
         } catch (err) {
           console.error('[InterviewRoom] Error updating interview status to completed:', err);
@@ -420,12 +435,14 @@ function AuthorizedInterviewRoom({ interviewId, initialInterview, initialUserRol
 
     if (userRole === 'candidate' && interview?.interviewer_id && !existingReview) {
       if (window.confirm('Would you like to rate your interviewer before leaving?')) {
+        webrtcRef.current?.stopMediaAndConnection?.();
         setShowReviewModal(true);
         return;
       }
     }
 
     if (!window.confirm('Are you sure you want to exit this interview session?')) return;
+    webrtcRef.current?.stopMediaAndConnection?.();
     navigate('/candidate/dashboard');
   };
 
