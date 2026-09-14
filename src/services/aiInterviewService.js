@@ -26,7 +26,7 @@ export async function startAIInterview({
 
   if (!response.ok) {
     const errData = await response.json().catch(() => ({}));
-    throw new Error(errData.error || 'Failed to generate interview questions from Gemini API.');
+    throw new Error(errData.error || errData.message || `AI question generation is temporarily unavailable (status ${response.status}). Please try again.`);
   }
 
   const { questions } = await response.json();
@@ -178,4 +178,42 @@ export async function completeInterviewSession(interviewId) {
   }
 
   return data;
+}
+
+/**
+ * Send a turn to the conversational AI interviewer
+ */
+export async function sendAITurn({
+  stage = 'introduction',
+  candidateName = 'Candidate',
+  resumeText = '',
+  history = [],
+  lastUserMessage = '',
+  interviewType = 'Technical',
+  difficulty = 'Medium',
+  codingProblem = null,
+  code = '',
+}) {
+  const response = await fetch('/api/questions/ai-turn', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      stage,
+      candidateName,
+      resumeText,
+      history,
+      lastUserMessage,
+      interviewType,
+      difficulty,
+      codingProblem,
+      code,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err.message || 'Failed to process AI conversation turn.');
+  }
+
+  return response.json();
 }
