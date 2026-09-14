@@ -568,11 +568,18 @@ function AuthorizedInterviewRoom({ interviewId, initialInterview, initialUserRol
                   {candidateResume && (
                     <button
                       type="button"
-                      onClick={() => setShowResumeModal(true)}
+                      onClick={() => {
+                        if (candidateResume.signedUrl || candidateResume.dataUrl) {
+                          window.open(candidateResume.signedUrl || candidateResume.dataUrl, '_blank', 'noopener,noreferrer');
+                        } else {
+                          setShowResumeModal(true);
+                        }
+                      }}
                       className="btn btn-outline btn-sm"
-                      style={{ padding: '0.1rem 0.4rem', fontSize: '0.7rem' }}
+                      style={{ padding: '0.1rem 0.5rem', fontSize: '0.75rem', display: 'inline-flex', alignItems: 'center', gap: '0.3rem' }}
+                      title="Open Candidate Resume PDF in new tab"
                     >
-                      <Eye size={11} /> View
+                      <ExternalLink size={12} /> View PDF
                     </button>
                   )}
                 </div>
@@ -926,21 +933,22 @@ function AuthorizedInterviewRoom({ interviewId, initialInterview, initialUserRol
             <span>{formatTimer(elapsedSeconds)}</span>
           </div>
 
-          {userRole === 'candidate' && interview?.interviewer_id && (
+          {candidateResume && (candidateResume.signedUrl || candidateResume.dataUrl) && (
             <button
-              onClick={() => setShowReviewModal(true)}
+              type="button"
+              onClick={() => window.open(candidateResume.signedUrl || candidateResume.dataUrl, '_blank', 'noopener,noreferrer')}
               className="btn btn-outline btn-sm"
               style={{
-                borderColor: existingReview ? '#10b981' : '#f59e0b',
-                color: existingReview ? '#34d399' : '#fbbf24',
                 display: 'flex',
                 alignItems: 'center',
                 gap: '0.35rem',
+                color: '#818cf8',
+                borderColor: 'rgba(129, 140, 248, 0.4)',
               }}
-              title={existingReview ? 'Reviewed' : 'Rate this interviewer'}
+              title={userRole === 'interviewer' ? "Open Candidate Resume PDF in new tab" : "Open My Resume PDF in new tab"}
             >
-              <Star size={14} fill={existingReview ? '#34d399' : '#fbbf24'} />
-              <span>{existingReview ? `Rated ${existingReview.rating}★` : 'Rate Interviewer'}</span>
+              <FileText size={14} />
+              <span>{userRole === 'interviewer' ? "Candidate Resume" : "My Resume"}</span>
             </button>
           )}
 
@@ -1209,12 +1217,18 @@ function AuthorizedInterviewRoom({ interviewId, initialInterview, initialUserRol
                       </div>
                       <button
                         type="button"
-                        onClick={() => setShowResumeModal(true)}
+                        onClick={() => {
+                          if (candidateResume.signedUrl || candidateResume.dataUrl) {
+                            window.open(candidateResume.signedUrl || candidateResume.dataUrl, '_blank', 'noopener,noreferrer');
+                          } else {
+                            setShowResumeModal(true);
+                          }
+                        }}
                         className="btn btn-primary btn-sm"
                         style={{ width: '100%', fontSize: '0.75rem', padding: '0.3rem 0.5rem', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem' }}
                       >
-                        <Eye size={13} />
-                        <span>View Resume</span>
+                        <ExternalLink size={13} />
+                        <span>View Resume (PDF)</span>
                       </button>
                     </div>
                   ) : (
@@ -1426,7 +1440,7 @@ function AuthorizedInterviewRoom({ interviewId, initialInterview, initialUserRol
             navigate('/candidate/dashboard');
           }}
           interview={interview}
-          candidateId={user?.id}
+          candidateId={interview.candidate_id}
           onReviewSubmitted={() => {
             loadExistingReview();
           }}
@@ -1454,9 +1468,9 @@ function AuthorizedInterviewRoom({ interviewId, initialInterview, initialUserRol
               backgroundColor: '#0f172a',
               border: '1px solid rgba(99, 102, 241, 0.3)',
               borderRadius: '0.75rem',
-              maxWidth: '680px',
+              maxWidth: '850px',
               width: '100%',
-              maxHeight: '80vh',
+              maxHeight: '88vh',
               display: 'flex',
               flexDirection: 'column',
               boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.6)',
@@ -1480,23 +1494,48 @@ function AuthorizedInterviewRoom({ interviewId, initialInterview, initialUserRol
                     {candidateProfile?.full_name || interview.candidate_name}'s Resume
                   </h3>
                   <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    {candidateResume.fileName} • Privacy Protected
+                    {candidateResume.fileName} • Secure Private Storage
                   </span>
                 </div>
               </div>
 
-              <button
-                type="button"
-                onClick={() => setShowResumeModal(false)}
-                className="btn btn-outline btn-sm"
-                style={{ padding: '0.25rem 0.5rem' }}
-              >
-                Close
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                {(candidateResume.signedUrl || candidateResume.dataUrl) && (
+                  <button
+                    type="button"
+                    onClick={() => window.open(candidateResume.signedUrl || candidateResume.dataUrl, '_blank', 'noopener,noreferrer')}
+                    className="btn btn-primary btn-sm"
+                    style={{ display: 'inline-flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.78rem' }}
+                  >
+                    <ExternalLink size={13} />
+                    <span>Open in New Tab</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowResumeModal(false)}
+                  className="btn btn-outline btn-sm"
+                  style={{ padding: '0.25rem 0.5rem' }}
+                >
+                  Close
+                </button>
+              </div>
             </div>
 
-            <div style={{ padding: '1.25rem 1.5rem', overflowY: 'auto', flex: 1 }}>
-              {candidateResume.rawText ? (
+            <div style={{ padding: '1rem 1.5rem', overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column' }}>
+              {(candidateResume.signedUrl || candidateResume.dataUrl) ? (
+                <iframe
+                  src={candidateResume.signedUrl || candidateResume.dataUrl}
+                  title="Candidate Resume PDF"
+                  style={{
+                    width: '100%',
+                    height: '520px',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 'var(--radius-sm)',
+                    background: '#1e293b',
+                  }}
+                />
+              ) : candidateResume.rawText ? (
                 <pre
                   style={{
                     backgroundColor: 'rgba(0, 0, 0, 0.3)',
@@ -1516,18 +1555,6 @@ function AuthorizedInterviewRoom({ interviewId, initialInterview, initialUserRol
                 <div style={{ textAlign: 'center', padding: '2rem 1rem', color: 'var(--text-secondary)' }}>
                   <FileText size={36} color="#64748b" style={{ margin: '0 auto 0.5rem auto' }} />
                   <p>Document file: {candidateResume.fileName}</p>
-                  {candidateResume.dataUrl && (
-                    <a
-                      href={candidateResume.dataUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="btn btn-primary btn-sm"
-                      style={{ marginTop: '1rem', display: 'inline-flex', alignItems: 'center', gap: '0.4rem' }}
-                    >
-                      <ExternalLink size={14} />
-                      <span>Open Document in New Tab</span>
-                    </a>
-                  )}
                 </div>
               )}
             </div>

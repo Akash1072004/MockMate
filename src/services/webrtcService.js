@@ -101,7 +101,7 @@ export class WebRTCManager {
 
     try {
       this.localStream = await navigator.mediaDevices.getUserMedia({
-        video: video ? { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } : false,
+        video: video ? { width: { ideal: 640, max: 1280 }, height: { ideal: 480, max: 720 }, frameRate: { ideal: 24, max: 30 } } : false,
         audio: audio ? { echoCancellation: true, noiseSuppression: true, autoGainControl: true } : false,
       });
 
@@ -167,18 +167,18 @@ export class WebRTCManager {
             case 'ready':
               // Peer announced readiness.
               console.log(`[WebRTC Signaling] Received 'ready' from ${payload.senderRole || 'peer'}.`);
-              if (this.isInitiator) {
+              if (this.isInitiator && !this.makingOffer && (!this.peerConnection || this.peerConnection.signalingState === 'stable')) {
                 console.log('[WebRTC Signaling] As interviewer, initiating offer...');
                 await this.createPeerConnection();
                 await this.sendOffer();
-              } else {
+              } else if (!this.isInitiator) {
                 // As candidate, announce ready back so interviewer knows we are present
                 this.broadcastSignal({ type: 'ack-ready', role: this.userRole });
               }
               break;
 
             case 'ack-ready':
-              if (this.isInitiator) {
+              if (this.isInitiator && !this.makingOffer && (!this.peerConnection || this.peerConnection.signalingState === 'stable')) {
                 console.log('[WebRTC Signaling] Received ack-ready from candidate. Generating offer...');
                 await this.createPeerConnection();
                 await this.sendOffer();
@@ -274,22 +274,25 @@ export class WebRTCManager {
         this.remoteStream = new MediaStream();
       }
 
-      // Add track to remote stream if not already present
-      const alreadyInStream = this.remoteStream.getTracks().some((t) => t.id === event.track.id);
-      if (!alreadyInStream) {
-        this.remoteStream.addTrack(event.track);
+      let hasNewTrack = false;
+      if (event.track) {
+        const alreadyInStream = this.remoteStream.getTracks().some((t) => t.id === event.track.id);
+        if (!alreadyInStream) {
+          this.remoteStream.addTrack(event.track);
+          hasNewTrack = true;
+        }
       }
 
       if (event.streams && event.streams[0]) {
-        // If streams array provides complete stream, sync tracks
         event.streams[0].getTracks().forEach((track) => {
           if (!this.remoteStream.getTracks().some((t) => t.id === track.id)) {
             this.remoteStream.addTrack(track);
+            hasNewTrack = true;
           }
         });
       }
 
-      if (this.onRemoteStream) {
+      if (hasNewTrack && this.onRemoteStream) {
         this.onRemoteStream(this.remoteStream);
       }
     };

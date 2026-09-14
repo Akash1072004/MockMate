@@ -37,7 +37,6 @@ export function useWebRTC({ interviewId, userId, userRole = 'candidate', enabled
     // Collect all local streams to ensure complete teardown
     const streamsToStop = [
       localStreamRef.current,
-      localStream,
       managerRef.current?.localStream,
       managerRef.current?.screenStream,
     ].filter(Boolean);
@@ -104,7 +103,7 @@ export function useWebRTC({ interviewId, userId, userRole = 'candidate', enabled
     // 11. Reset connection state
     setConnectionState('disconnected');
     setSignalingState('idle');
-  }, [localStream]);
+  }, []);
 
   const initWebRTC = useCallback(async () => {
     if (!interviewId || !userId || !enabled) return;

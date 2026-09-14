@@ -19,8 +19,11 @@ import {
   ShieldCheck,
   Target,
   Terminal,
-  Cpu
+  Cpu,
+  Star
 } from 'lucide-react';
+import ReviewModal from '../components/interview/ReviewModal';
+import { getReviewByInterviewId } from '../services/reviewService';
 
 export default function InterviewResultsPage() {
   const { id: interviewId } = useParams();
@@ -30,6 +33,8 @@ export default function InterviewResultsPage() {
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [showReviewModal, setShowReviewModal] = useState(false);
+  const [existingReview, setExistingReview] = useState(null);
 
   const loadReport = async () => {
     if (!interviewId) return;
@@ -52,6 +57,9 @@ export default function InterviewResultsPage() {
 
   useEffect(() => {
     loadReport();
+    if (interviewId) {
+      getReviewByInterviewId(interviewId).then(setExistingReview).catch(() => {});
+    }
   }, [interviewId]);
 
   // Realtime subscription: update evaluation immediately when interviewer submits
@@ -298,7 +306,24 @@ export default function InterviewResultsPage() {
           <span>Back to Dashboard</span>
         </Link>
 
-        <div style={{ display: 'flex', gap: '0.75rem' }}>
+        <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+          {isPeer && !isInterviewer && interview?.interviewer_id && (
+            <button
+              type="button"
+              onClick={() => setShowReviewModal(true)}
+              className="btn btn-outline btn-sm"
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                borderColor: existingReview ? '#10b981' : '#f59e0b',
+                color: existingReview ? '#34d399' : '#fbbf24',
+              }}
+            >
+              <Star size={15} fill={existingReview ? '#34d399' : '#fbbf24'} />
+              <span>{existingReview ? `Rated ${existingReview.rating}★` : 'Rate Interviewer'}</span>
+            </button>
+          )}
           <button
             onClick={() => window.print()}
             className="btn btn-outline btn-sm"
@@ -755,6 +780,19 @@ export default function InterviewResultsPage() {
           </Link>
         </div>
       </div>
+
+      {/* Peer Interviewer Review Modal */}
+      {showReviewModal && interview && (
+        <ReviewModal
+          isOpen={showReviewModal}
+          onClose={() => setShowReviewModal(false)}
+          interview={interview}
+          candidateId={interview.candidate_id}
+          onReviewSubmitted={() => {
+            getReviewByInterviewId(interviewId).then(setExistingReview).catch(() => {});
+          }}
+        />
+      )}
     </div>
   );
 }

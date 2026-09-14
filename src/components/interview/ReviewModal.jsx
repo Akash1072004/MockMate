@@ -64,7 +64,7 @@ export default function ReviewModal({
     try {
       await submitReview({
         interviewId: interview.id,
-        candidateId,
+        candidateId: interview.candidate_id || candidateId,
         interviewerId: interview.interviewer_id,
         rating,
         reviewText,

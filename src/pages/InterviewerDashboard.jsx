@@ -32,13 +32,16 @@ import QuestionBankModal from '../components/questions/QuestionBankModal';
 import LiveNowSection from '../components/interview/LiveNowSection';
 import ScheduleModal from '../components/interviews/ScheduleModal';
 import { addQuestionToInterview, removeQuestionFromInterview, getInterviewQuestions } from '../services/questionService';
+import { getCandidateResume } from '../services/resumeService';
+import { scheduleInterview } from '../services/interviewerService';
 import { usePresencePublisher } from '../hooks/usePresence';
 import { getLeaderboard } from '../services/leaderboardService';
 
-function WaitingInterviewCard({ item, onAddQuestion }) {
+function WaitingInterviewCard({ item, onAddQuestion, onSchedule }) {
   const [questions, setQuestions] = useState([]);
   const [loadingQ, setLoadingQ] = useState(false);
   const [removingId, setRemovingId] = useState(null);
+  const [loadingResume, setLoadingResume] = useState(false);
 
   const loadQuestions = async () => {
     setLoadingQ(true);
@@ -65,6 +68,23 @@ function WaitingInterviewCard({ item, onAddQuestion }) {
       alert('Failed to remove question: ' + err.message);
     } finally {
       setRemovingId(null);
+    }
+  };
+
+  const handleViewResume = async () => {
+    if (!item.candidate_id) return;
+    setLoadingResume(true);
+    try {
+      const res = await getCandidateResume(item.candidate_id);
+      if (res?.signedUrl || res?.dataUrl) {
+        window.open(res.signedUrl || res.dataUrl, '_blank', 'noopener,noreferrer');
+      } else {
+        alert('Resume not available for this candidate.');
+      }
+    } catch (err) {
+      alert('Failed to load resume: ' + err.message);
+    } finally {
+      setLoadingResume(false);
     }
   };
 
@@ -102,6 +122,30 @@ function WaitingInterviewCard({ item, onAddQuestion }) {
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            onClick={handleViewResume}
+            disabled={loadingResume}
+            className="btn btn-outline btn-sm"
+            style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#818cf8', borderColor: 'rgba(129, 140, 248, 0.4)' }}
+            title="View Candidate Resume PDF in new tab"
+          >
+            <FileText size={14} />
+            <span>{loadingResume ? 'Opening Resume...' : 'View Resume'}</span>
+          </button>
+
+          {onSchedule && (
+            <button
+              type="button"
+              onClick={() => onSchedule(item)}
+              className="btn btn-outline btn-sm"
+              style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#d8b4fe', borderColor: 'rgba(168, 85, 247, 0.4)' }}
+            >
+              <Calendar size={14} />
+              <span>{item.start_time ? 'Reschedule' : 'Schedule'}</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => onAddQuestion(item.id)}
@@ -201,6 +245,21 @@ export default function InterviewerDashboard() {
   const [showQuestionBankModal, setShowQuestionBankModal] = useState(false);
   const [selectedInterviewForQuestions, setSelectedInterviewForQuestions] = useState(null);
   const [schedulingRequest, setSchedulingRequest] = useState(null);
+  const [schedulingInterview, setSchedulingInterview] = useState(null);
+
+  const handleViewCandidateResume = async (candidateId) => {
+    if (!candidateId) return;
+    try {
+      const res = await getCandidateResume(candidateId);
+      if (res?.signedUrl || res?.dataUrl) {
+        window.open(res.signedUrl || res.dataUrl, '_blank', 'noopener,noreferrer');
+      } else {
+        alert('No resume uploaded by this candidate yet.');
+      }
+    } catch (err) {
+      alert('Failed to load candidate resume: ' + err.message);
+    }
+  };
 
   // Candidates discovery state
   const [candidatesList, setCandidatesList] = useState([]);
@@ -287,6 +346,42 @@ export default function InterviewerDashboard() {
     } finally {
       setActionLoading(null);
       setSchedulingRequest(null);
+    }
+  };
+
+  const handleConfirmScheduleInterview = async ({ scheduledAt, duration }) => {
+    if (!schedulingInterview) return;
+    const intItem = schedulingInterview;
+    setActionLoading(intItem.id);
+    setActionError('');
+    try {
+      await scheduleInterview(intItem.id, { scheduledAt, duration });
+      setActionSuccess(`Interview schedule updated to ${new Date(scheduledAt).toLocaleString()}!`);
+      setTimeout(() => setActionSuccess(''), 5000);
+      refresh();
+    } catch (err) {
+      setActionError(err.message || 'Failed to update schedule.');
+    } finally {
+      setActionLoading(null);
+      setSchedulingInterview(null);
+    }
+  };
+
+  const handleConfirmStartNowInterview = async ({ duration }) => {
+    if (!schedulingInterview) return;
+    const intItem = schedulingInterview;
+    setActionLoading(intItem.id);
+    setActionError('');
+    try {
+      await scheduleInterview(intItem.id, { scheduledAt: new Date().toISOString(), duration });
+      setActionSuccess('Interview session is now ready to begin!');
+      setTimeout(() => setActionSuccess(''), 5000);
+      refresh();
+    } catch (err) {
+      setActionError(err.message || 'Failed to update schedule.');
+    } finally {
+      setActionLoading(null);
+      setSchedulingInterview(null);
     }
   };
 
@@ -658,8 +753,18 @@ export default function InterviewerDashboard() {
                           </div>
                         </div>
 
-                        {/* Social Links */}
-                        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+                        {/* Social Links & Candidate Resume */}
+                        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                          <button
+                            type="button"
+                            onClick={() => handleViewCandidateResume(req.candidate_id)}
+                            className="btn btn-outline btn-xs"
+                            style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', color: '#818cf8', borderColor: 'rgba(129, 140, 248, 0.4)' }}
+                            title="Open candidate's uploaded resume as PDF"
+                          >
+                            <FileText size={12} />
+                            <span>View Resume</span>
+                          </button>
                           {socials.github && (
                             <a href={socials.github.startsWith('http') ? socials.github : `https://${socials.github}`} target="_blank" rel="noreferrer" style={{ fontSize: '0.8rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
                               <span>GitHub</span>
@@ -720,6 +825,7 @@ export default function InterviewerDashboard() {
                   <WaitingInterviewCard
                     key={item.id}
                     item={item}
+                    onSchedule={(intItem) => setSchedulingInterview(intItem)}
                     onAddQuestion={(interviewId) => {
                       setSelectedInterviewForQuestions(interviewId);
                       setShowQuestionBankModal(true);
@@ -1168,7 +1274,7 @@ export default function InterviewerDashboard() {
         />
       )}
 
-      {/* Schedule Interview Modal */}
+      {/* Schedule Interview Modal (From Request) */}
       {schedulingRequest && (
         <ScheduleModal
           isOpen={Boolean(schedulingRequest)}
@@ -1176,6 +1282,19 @@ export default function InterviewerDashboard() {
           request={schedulingRequest}
           onSchedule={handleConfirmSchedule}
           onStartNow={handleConfirmStartNow}
+        />
+      )}
+
+      {/* Schedule / Reschedule Modal (From Waiting Interview) */}
+      {schedulingInterview && (
+        <ScheduleModal
+          isOpen={Boolean(schedulingInterview)}
+          onClose={() => setSchedulingInterview(null)}
+          request={{
+            candidate_name: schedulingInterview.candidate_name,
+          }}
+          onSchedule={handleConfirmScheduleInterview}
+          onStartNow={handleConfirmStartNowInterview}
         />
       )}
     </div>

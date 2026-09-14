@@ -26,7 +26,7 @@ import {
 } from 'lucide-react';
 import ReviewModal from '../components/interview/ReviewModal';
 import LiveNowSection from '../components/interview/LiveNowSection';
-import { hasResume as checkHasResume } from '../services/resumeService';
+import { hasResume as checkHasResume, getCandidateResume } from '../services/resumeService';
 
 function formatScheduledCountdown(targetMs, nowMs) {
   const diff = Math.max(0, targetMs - nowMs);
@@ -173,20 +173,47 @@ export default function CandidateDashboard() {
 
   const displayName = profile?.full_name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'Candidate';
 
-  // Categorize interviews and requests strictly for current authenticated candidate
+  // Categorize interviews strictly for current authenticated candidate
   const myInterviews = interviews.filter((i) => i.candidate_id === user?.id);
   const activeInterviews = myInterviews.filter((i) => i.status === 'active');
   const scheduledInterviews = myInterviews.filter(
     (i) => (i.status === 'scheduled' || i.status === 'waiting') && i.start_time && new Date(i.start_time).getTime() > now
   );
+  // Ready to enter waiting room: countdown has reached zero or scheduled time arrived
   const waitingInterviews = myInterviews.filter(
-    (i) => (i.status === 'waiting' || i.status === 'scheduled') && (!i.start_time || new Date(i.start_time).getTime() <= now)
+    (i) => (i.status === 'waiting' || i.status === 'scheduled') && i.start_time && new Date(i.start_time).getTime() <= now
+  );
+  // Accepted peer requests awaiting date/time scheduling from interviewer (start_time is null)
+  const unscheduledInterviews = myInterviews.filter(
+    (i) => i.status === 'waiting' && !i.start_time
   );
   const completedInterviews = myInterviews.filter((i) => i.status === 'completed');
 
-  const pendingRequests = requests.filter((r) => r.status === 'pending');
-  const acceptedRequests = requests.filter((r) => r.status === 'accepted');
-  const otherRequests = requests.filter((r) => r.status === 'declined' || r.status === 'cancelled');
+  // Helper to match interview for a request
+  const getLinkedInterview = (req) => {
+    return myInterviews.find(
+      (i) =>
+        (req.interview_id && i.id === req.interview_id) ||
+        (i.request_id && i.request_id === req.id) ||
+        (i.interviewer_id === req.interviewer_id && ['scheduled', 'waiting', 'active', 'completed'].includes(i.status))
+    );
+  };
+
+  // Filter requests for Tab 2: Show only current active requests
+  // Completed or cancelled interviews belong strictly in History tab
+  const currentRequests = requests.filter((req) => {
+    const linked = getLinkedInterview(req);
+    if (linked && (linked.status === 'completed' || linked.status === 'cancelled')) {
+      return false;
+    }
+    if (req.status === 'declined' || req.status === 'cancelled') {
+      return false;
+    }
+    return true;
+  });
+
+  const pendingRequests = currentRequests.filter((r) => r.status === 'pending');
+  const acceptedRequests = currentRequests.filter((r) => r.status === 'accepted');
 
   const handleCancel = async (requestId) => {
     setActionError('');
@@ -194,6 +221,20 @@ export default function CandidateDashboard() {
       await cancelRequest(requestId);
     } catch (err) {
       setActionError(err.message || 'Failed to cancel request.');
+    }
+  };
+
+  const handleViewMyResume = async () => {
+    setActionError('');
+    try {
+      const res = await getCandidateResume(user?.id);
+      if (res?.signedUrl || res?.dataUrl) {
+        window.open(res.signedUrl || res.dataUrl, '_blank', 'noopener,noreferrer');
+      } else {
+        setActionError('No resume uploaded yet. Please upload your resume in Edit Profile.');
+      }
+    } catch (err) {
+      setActionError('Failed to load resume: ' + (err.message || 'Unknown error'));
     }
   };
 
@@ -266,6 +307,15 @@ export default function CandidateDashboard() {
             >
               <RotateCw size={15} style={{ animation: refreshing ? 'spin 1s linear infinite' : 'none' }} />
               <span>{refreshing ? 'Syncing...' : 'Refresh'}</span>
+            </button>
+            <button
+              onClick={handleViewMyResume}
+              className="btn btn-secondary btn-sm"
+              style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+              title="View your uploaded resume PDF"
+            >
+              <FileText size={15} />
+              <span>View My Resume</span>
             </button>
             <Link to="/profile" className="btn btn-secondary btn-sm">
               <User size={15} />
@@ -394,8 +444,53 @@ export default function CandidateDashboard() {
         </div>
       )}
 
-      {/* 4. PRIORITY ALERTS: PENDING INTERVIEW REQUESTS SENT */}
-      {pendingRequests.length > 0 && activeInterviews.length === 0 && scheduledInterviews.length === 0 && waitingInterviews.length === 0 && (
+      {/* 4. PRIORITY ALERTS: ACCEPTED SESSIONS AWAITING DATE/TIME SCHEDULING */}
+      {unscheduledInterviews.length > 0 && activeInterviews.length === 0 && scheduledInterviews.length === 0 && waitingInterviews.length === 0 && (
+        <div style={{ marginBottom: '2rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          {unscheduledInterviews.map((item) => (
+            <div 
+              key={item.id}
+              className="card" 
+              style={{ 
+                background: 'rgba(16, 185, 129, 0.08)', 
+                border: '1px solid rgba(16, 185, 129, 0.4)',
+                boxShadow: '0 0 20px rgba(16, 185, 129, 0.15)',
+                padding: '1.25rem 1.5rem',
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '1rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <div style={{ width: 42, height: 42, borderRadius: 'var(--radius-md)', background: 'rgba(16, 185, 129, 0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#10b981' }}>
+                    <CheckCircle2 size={22} />
+                  </div>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.2rem' }}>
+                      <span style={{ fontWeight: 700, fontSize: '1.05rem', color: '#34d399' }}>
+                        Interview Request Accepted
+                      </span>
+                      <span className="badge badge-success">Accepted · Awaiting Schedule</span>
+                    </div>
+                    <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+                      Interviewer <strong>{item.interviewer_name || 'Verified Interviewer'}</strong> has accepted your request. Waiting for interviewer to schedule date and time.
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  {item.join_code && (
+                    <span className="badge badge-secondary" style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem' }}>
+                      Code: {item.join_code}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 5. PRIORITY ALERTS: PENDING INTERVIEW REQUESTS SENT */}
+      {pendingRequests.length > 0 && activeInterviews.length === 0 && scheduledInterviews.length === 0 && waitingInterviews.length === 0 && unscheduledInterviews.length === 0 && (
         <div style={{ marginBottom: '2rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
           {pendingRequests.map((req) => (
             <div 
@@ -793,15 +888,15 @@ export default function CandidateDashboard() {
           </div>
         )}
 
-        {/* Tab 2: My Interview Requests (Pending, Accepted, Declined) */}
+        {/* Tab 2: My Interview Requests (Pending, Accepted, Awaiting Schedule) */}
         {activeTab === 'requests' && (
           <div>
-            {requests.length === 0 ? (
+            {currentRequests.length === 0 ? (
               <div style={{ textAlign: 'center', padding: '3.5rem 1rem', color: 'var(--text-secondary)' }}>
                 <Clock size={36} color="var(--border-subtle)" style={{ margin: '0 auto 0.75rem auto' }} />
-                <p style={{ fontWeight: 600 }}>No interview requests found.</p>
+                <p style={{ fontWeight: 600 }}>No active interview requests.</p>
                 <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-                  You haven't sent any interview requests to peer interviewers yet.
+                  When you request a mock interview with a peer interviewer, your request and schedule will appear here.
                 </p>
                 <div style={{ marginTop: '1.25rem' }}>
                   <Link to="/candidate/find-interviewer" className="btn btn-primary btn-sm">
@@ -811,12 +906,8 @@ export default function CandidateDashboard() {
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                {requests.map((req) => {
-                  const linkedInterview = myInterviews.find(
-                    (i) =>
-                      (req.interview_id && i.id === req.interview_id) ||
-                      (i.interviewer_id === req.interviewer_id && ['scheduled', 'waiting', 'active', 'completed'].includes(i.status))
-                  );
+                {currentRequests.map((req) => {
+                  const linkedInterview = getLinkedInterview(req);
 
                   // 1. If accepted and scheduled in future -> Show scheduled countdown card directly in place!
                   if (
@@ -882,6 +973,7 @@ export default function CandidateDashboard() {
                     req.status === 'accepted' &&
                     linkedInterview &&
                     (linkedInterview.status === 'waiting' || (linkedInterview.start_time && new Date(linkedInterview.start_time).getTime() <= now)) &&
+                    linkedInterview.start_time &&
                     linkedInterview.status !== 'completed'
                   ) {
                     return (
@@ -922,7 +1014,7 @@ export default function CandidateDashboard() {
                     );
                   }
 
-                  // 4. Default request row: Pending ("Request Sent"), Accepted (unscheduled), Declined, Cancelled
+                  // 4. Default request row: Pending ("Request Sent") or Accepted awaiting schedule (NO countdown, NO Enter button)
                   return (
                     <div 
                       key={req.id}
@@ -948,8 +1040,11 @@ export default function CandidateDashboard() {
                           </span>
                         </div>
                         <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                          Requested on {new Date(req.created_at).toLocaleString()}
-                          {req.responded_at && ` • Responded: ${new Date(req.responded_at).toLocaleString()}`}
+                          {req.status === 'accepted' 
+                            ? 'Interviewer has accepted your request and will schedule the session date and time shortly.'
+                            : `Requested on ${new Date(req.created_at).toLocaleString()}`
+                          }
+                          {req.responded_at && req.status !== 'accepted' && ` • Responded: ${new Date(req.responded_at).toLocaleString()}`}
                         </div>
                       </div>
 
@@ -969,19 +1064,6 @@ export default function CandidateDashboard() {
                             <XCircle size={15} />
                             <span>Cancel Request</span>
                           </button>
-                        )}
-
-                        {req.status === 'accepted' && (req.interview_id || linkedInterview?.id) && (
-                          <Link to={`/interview/${req.interview_id || linkedInterview.id}`} className="btn btn-primary btn-sm" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                            <Play size={15} />
-                            <span>Enter Waiting Room</span>
-                          </Link>
-                        )}
-
-                        {req.status === 'declined' && (
-                          <Link to="/candidate/find-interviewer" className="btn btn-outline btn-sm">
-                            Find Another Interviewer
-                          </Link>
                         )}
                       </div>
                     </div>
@@ -1049,6 +1131,18 @@ export default function CandidateDashboard() {
                         <FileText size={15} />
                         <span>View Report</span>
                       </Link>
+
+                      {!item.is_ai && item.interviewer_id && (
+                        <button
+                          onClick={() => setReviewingInterview(item)}
+                          className="btn btn-secondary btn-sm"
+                          style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                          title="Rate and review this interviewer"
+                        >
+                          <Star size={14} color="#f59e0b" fill="#f59e0b" />
+                          <span>Rate Interviewer</span>
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -1064,7 +1158,7 @@ export default function CandidateDashboard() {
           isOpen={Boolean(reviewingInterview)}
           onClose={() => setReviewingInterview(null)}
           interview={reviewingInterview}
-          candidateId={user?.id}
+          candidateId={reviewingInterview.candidate_id || user?.id}
           onReviewSubmitted={() => {
             setReviewingInterview(null);
             refresh();
