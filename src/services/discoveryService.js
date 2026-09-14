@@ -11,7 +11,7 @@ export async function getAvailableInterviewers() {
     return { data: [], error: null };
   }
 
-  // 1. Fetch available interviewers
+  // 1. Fetch interviewer profiles
   const { data: interviewers, error } = await supabase
     .from('profiles')
     .select(`
@@ -25,10 +25,11 @@ export async function getAvailableInterviewers() {
       portfolio,
       experience,
       is_available,
+      headline,
+      username,
       created_at
     `)
     .eq('role', 'interviewer')
-    .eq('is_available', true)
     .order('created_at', { ascending: false });
 
   if (error) {
@@ -40,8 +41,9 @@ export async function getAvailableInterviewers() {
     return { data: [], error: null };
   }
 
-  // 2. Fetch rating summaries for these interviewers
   const interviewerIds = interviewers.map((i) => i.id);
+
+  // 2. Fetch rating summaries for these interviewers
   const { data: reviews, error: reviewsError } = await supabase
     .from('reviews')
     .select('interviewer_id, rating')
@@ -58,16 +60,27 @@ export async function getAvailableInterviewers() {
     });
   }
 
-  // Combine interviewers with their real rating metrics
+  // 3. Fetch genuinely active in-progress interview count
+  const { data: activeInterviews } = await supabase
+    .from('interviews')
+    .select('interviewer_id')
+    .in('interviewer_id', interviewerIds)
+    .eq('status', 'active');
+
+  const activeSet = new Set((activeInterviews || []).map((row) => row.interviewer_id));
+
+  // Combine interviewers with their rating metrics and active status
   const combined = interviewers.map((interviewer) => {
     const stats = ratingsMap[interviewer.id];
     const avgRating = stats && stats.count > 0 ? (stats.sum / stats.count).toFixed(1) : null;
     const reviewCount = stats ? stats.count : 0;
+    const isBusy = activeSet.has(interviewer.id);
 
     return {
       ...interviewer,
       averageRating: avgRating,
       reviewCount,
+      isBusy,
     };
   });
 

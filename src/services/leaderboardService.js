@@ -28,11 +28,11 @@ export async function getLeaderboard() {
     }
 
     if (leaderboardRows && leaderboardRows.length > 0) {
-      // Enrich with profile skills/socials
+      // Enrich with profile skills/socials/handles
       const candidateIds = leaderboardRows.map((v) => v.candidate_id);
       const { data: profiles } = await supabase
         .from('profiles')
-        .select('id, skills, linkedin, experience')
+        .select('id, username, headline, skills, linkedin, github, leetcode, codeforces, codechef, experience')
         .in('id', candidateIds);
 
       const profileMap = new Map();
@@ -42,8 +42,14 @@ export async function getLeaderboard() {
         const p = profileMap.get(row.candidate_id);
         return {
           ...row,
+          username: p?.username || null,
+          headline: p?.headline || null,
           skills: p?.skills || [],
           linkedin: p?.linkedin || null,
+          github: p?.github || null,
+          leetcode: p?.leetcode || null,
+          codeforces: p?.codeforces || null,
+          codechef: p?.codechef || null,
           experience: p?.experience || null,
         };
       });

@@ -320,9 +320,14 @@ export default function LeaderboardPage() {
                       {/* Candidate Name & Skills */}
                       <td style={{ padding: '1.1rem 1.25rem' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
-                          <span style={{ fontWeight: 700, color: isCurrentUser ? '#a5b4fc' : '#f9fafb', fontSize: '0.95rem' }}>
+                          <Link
+                            to={`/candidates/${c.username || c.candidate_id}`}
+                            style={{ fontWeight: 700, color: isCurrentUser ? '#a5b4fc' : '#f9fafb', fontSize: '0.95rem', textDecoration: 'none' }}
+                            onMouseEnter={(e) => (e.currentTarget.style.textDecoration = 'underline')}
+                            onMouseLeave={(e) => (e.currentTarget.style.textDecoration = 'none')}
+                          >
                             {c.candidate_name}
-                          </span>
+                          </Link>
                           {isCurrentUser && (
                             <span className="badge badge-primary" style={{ fontSize: '0.7rem', padding: '1px 6px' }}>
                               You
