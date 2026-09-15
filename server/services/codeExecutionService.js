@@ -221,16 +221,21 @@ export async function executeCode({
       const exeFile = path.join(execDir, 'solution.exe');
       fs.writeFileSync(sourceFile, code, 'utf8');
 
-      // Direct contest compilation
+      // Direct contest compilation with 25s limit and explicit timeout diagnostics
       const compileResult = await runProcess({
         command: 'g++',
         args: ['solution.cpp', '-std=c++17', '-o', 'solution.exe'],
         cwd: execDir,
-        timeoutMs: 10000,
+        timeoutMs: 25000,
       });
 
-      if (compileResult.timedOut || compileResult.exitCode !== 0) {
-        let rawErr = compileResult.stderr || compileResult.stdout || 'Compilation failed';
+      if (compileResult.timedOut) {
+        compilationError = `Compilation timed out (${compileResult.durationMs || 25000}ms). The C++ compiler exceeded the time limit.\nNote: Including monolithic headers like <bits/stdc++.h> loads the entire C++ standard library and may compile slowly on cloud containers. Consider including specific headers (e.g. <iostream>, <vector>, <string>, <algorithm>).`;
+      } else if (compileResult.exitCode !== 0) {
+        let rawErr = (compileResult.stderr || '').trim() || (compileResult.stdout || '').trim();
+        if (!rawErr) {
+          rawErr = `Compilation process terminated with exit code ${compileResult.exitCode || 1} without compiler diagnostics.`;
+        }
         if (/undefined reference to [`']WinMain(@16)?['`]/i.test(rawErr)) {
           rawErr = "Compilation Error: Entry point 'main()' not found.\nIn competitive programming, execution begins at 'int main() { ... }'. Please ensure your C++ program includes 'int main()'.";
         }
@@ -247,19 +252,22 @@ export async function executeCode({
       const sourceFile = path.join(execDir, className + '.java');
       fs.writeFileSync(sourceFile, code, 'utf8');
 
-      // Compile Java
+      // Compile Java with 25s limit and explicit timeout diagnostics
       const compileResult = await runProcess({
         command: 'javac',
         args: [className + '.java'],
         cwd: execDir,
-        timeoutMs: 10000,
+        timeoutMs: 25000,
       });
 
-      if (compileResult.timedOut || compileResult.exitCode !== 0) {
-        compilationError = sanitizeOutput(
-          compileResult.stderr || compileResult.stdout || 'Compilation failed',
-          execDir
-        );
+      if (compileResult.timedOut) {
+        compilationError = `Compilation timed out (${compileResult.durationMs || 25000}ms). The Java compiler (javac) exceeded the time limit.`;
+      } else if (compileResult.exitCode !== 0) {
+        let rawErr = (compileResult.stderr || '').trim() || (compileResult.stdout || '').trim();
+        if (!rawErr) {
+          rawErr = `Java compilation process terminated with exit code ${compileResult.exitCode || 1}.`;
+        }
+        compilationError = sanitizeOutput(rawErr, execDir);
       } else {
         runCommand = 'java';
         runArgs = [className];

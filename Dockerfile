@@ -20,6 +20,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
+# Precompile <bits/stdc++.h> for ultra-fast C++ competitive programming compilation
+RUN find /usr/include -name "stdc++.h" -exec g++ -std=c++17 -O2 {} -o {}.gch \; 2>/dev/null || true
+
 # Set production environment defaults
 ENV NODE_ENV=production
 ENV PORT=5000
