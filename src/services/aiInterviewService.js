@@ -1,3 +1,4 @@
+import { getApiBaseUrl } from '../utils/apiConfig';
 import { supabase, isSupabaseConfigured } from '../lib/supabase';
 
 export const AI_STAGE_DEFINITIONS = [
@@ -184,7 +185,8 @@ export async function sendAITurn({
   intent = 'ask_stage_question',
   followUpCount = 0,
 }) {
-  const response = await fetch('/api/questions/ai-turn', {
+  const apiBase = getApiBaseUrl();
+  const response = await fetch(`${apiBase}/questions/ai-turn`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
