@@ -1,7 +1,7 @@
 import React from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
-import { Bot, LogOut, User, LayoutDashboard, Trophy, Award } from 'lucide-react';
+import { Bot, User, LayoutDashboard, Trophy, Sparkles, Users, KeyRound } from 'lucide-react';
 import ProfileDropdown from './ProfileDropdown';
 import { usePresencePublisher } from '../../hooks/usePresence';
 
@@ -18,24 +18,14 @@ export default function Navbar() {
     inInterview: location.pathname.includes('/interview/') && !location.pathname.includes('/interview/ai'),
   });
 
-  const handleSignOut = async () => {
-    try {
-      await signOut();
-      navigate('/login');
-    } catch (err) {
-      console.error('[Navbar] Sign out error:', err);
-    }
-  };
-
   const dashboardPath = role === 'interviewer' ? '/interviewer/dashboard' : '/candidate/dashboard';
-  const displayName = profile?.full_name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'User';
 
   return (
     <header className="navbar">
       <div className="container navbar-inner">
         <Link to="/" className="nav-brand">
           <div className="nav-brand-icon">
-            <Bot size={20} />
+            <Bot size={18} />
           </div>
           <span>Mock<span className="text-gradient">Mate</span></span>
         </Link>
@@ -47,9 +37,9 @@ export default function Navbar() {
               <Link 
                 to={dashboardPath} 
                 className={`nav-link ${location.pathname.includes('/dashboard') ? 'active' : ''}`}
-                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}
               >
-                <LayoutDashboard size={16} />
+                <LayoutDashboard size={15} />
                 <span>Dashboard</span>
               </Link>
               {role === 'candidate' && (
@@ -57,33 +47,43 @@ export default function Navbar() {
                   <Link 
                     to="/candidate/find-interviewer" 
                     className={`nav-link ${location.pathname === '/candidate/find-interviewer' ? 'active' : ''}`}
-                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}
                   >
+                    <Users size={15} />
                     <span>Find Interviewer</span>
+                  </Link>
+                  <Link 
+                    to="/interview/ai" 
+                    className={`nav-link ${location.pathname === '/interview/ai' ? 'active' : ''}`}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', color: location.pathname === '/interview/ai' ? '#a5b4fc' : '#818cf8' }}
+                  >
+                    <Sparkles size={15} />
+                    <span>AI Interview</span>
                   </Link>
                   <Link 
                     to="/join" 
                     className={`nav-link ${location.pathname === '/join' ? 'active' : ''}`}
-                    style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}
                   >
-                    <span>Join by Code</span>
+                    <KeyRound size={15} />
+                    <span>Join Room</span>
                   </Link>
                 </>
               )}
               <Link 
                 to="/leaderboard" 
                 className={`nav-link ${location.pathname === '/leaderboard' ? 'active' : ''}`}
-                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}
               >
-                <Trophy size={16} />
+                <Trophy size={15} />
                 <span>Leaderboard</span>
               </Link>
               <Link 
                 to="/profile" 
                 className={`nav-link ${location.pathname === '/profile' ? 'active' : ''}`}
-                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}
               >
-                <User size={16} />
+                <User size={15} />
                 <span>Profile</span>
               </Link>
             </nav>
@@ -112,20 +112,20 @@ export default function Navbar() {
                 to="/#live-interview" 
                 className="nav-link"
               >
-                Peer Interview
+                Peer Sessions
               </Link>
               <Link 
                 to="/leaderboard" 
                 className={`nav-link ${location.pathname === '/leaderboard' ? 'active' : ''}`}
-                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+                style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}
               >
-                <Trophy size={16} />
+                <Trophy size={15} />
                 <span>Leaderboard</span>
               </Link>
             </nav>
 
             <div className="nav-actions">
-              <Link to="/login" className="btn btn-outline btn-sm">
+              <Link to="/login" className="btn btn-ghost btn-sm">
                 Sign In
               </Link>
               <Link to="/signup" className="btn btn-primary btn-sm">

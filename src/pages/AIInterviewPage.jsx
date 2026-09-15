@@ -15,6 +15,7 @@ import { requestEvaluation } from '../services/evaluationService';
 import { getCandidateResume, hasResume } from '../services/resumeService';
 import { useSpeechRecognition } from '../hooks/useSpeechRecognition';
 import CollaborativeCodeEditor from '../components/interview/CollaborativeCodeEditor';
+import InterviewStageSidebar from '../components/interview/InterviewStageSidebar';
 import LeetCodeQuestionPanel from '../components/interview/LeetCodeQuestionPanel';
 import { CODE_TEMPLATES } from '../utils/codeTemplates';
 import {
@@ -123,6 +124,19 @@ export default function AIInterviewPage() {
   const isEditorVisible = currentStage === 'coding' || codingEditorOpen;
   // UI-only LeetCode-style expanded workspace state (leaves AI interview & state machine unchanged)
   const [editorExpanded, setEditorExpanded] = useState(false);
+  const [stageSidebarCollapsed, setStageSidebarCollapsed] = useState(false);
+
+  // Keyboard shortcut: Esc to exit fullscreen editor
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape' && editorExpanded) {
+        setEditorExpanded(false);
+        setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [editorExpanded]);
 
   // Resizable Problem Statement panel (Top Problem Statement <-> Monaco Code Editor)
   const [problemHeight, setProblemHeight] = useState(() => {
@@ -214,6 +228,8 @@ export default function AIInterviewPage() {
     isSupported: isSpeechSupported,
     isListening,
     transcript,
+    interimTranscript,
+    error: speechError,
     startListening,
     stopListening,
     resetTranscript,
@@ -1352,173 +1368,188 @@ export default function AIInterviewPage() {
 
   // 3. LIVE INTERVIEW SESSION
   return (
-    <div style={{ height: 'calc(100vh - 64px)', display: 'flex', flexDirection: 'column', background: '#0a0d14' }}>
-      {/* TOP BAR: Session Info & Stage Indicator */}
-      <div style={{
-        background: '#0d111b',
+    <div style={{
+      height: 'calc(100vh - 64px)',
+      width: '100%',
+      maxWidth: '100vw',
+      display: 'flex',
+      flexDirection: 'column',
+      background: '#080c14',
+      overflow: 'hidden',
+      boxSizing: 'border-box',
+    }}>
+      {/* =========================================================================
+          TOP COMPACT HEADER
+          Contains session metadata, stage pill, timer, and interview actions.
+          Fits cleanly within viewport with zero overflow.
+          ========================================================================= */}
+      <header style={{
+        height: '50px',
+        minHeight: '50px',
+        maxHeight: '50px',
+        background: '#0c121e',
         borderBottom: '1px solid var(--border-subtle)',
-        padding: '0.5rem 1.25rem',
+        padding: '0 1rem',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
         flexShrink: 0,
+        gap: '0.75rem',
+        zIndex: 30,
       }}>
-        {/* Left: Exit button & AI Interviewer Status */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+        {/* Left: Exit button & Interview Info & Stage Indicator */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', minWidth: 0, overflow: 'hidden' }}>
           <button
             onClick={() => setShowExitModal(true)}
-            className="btn btn-ghost btn-sm"
+            className="btn btn-ghost btn-xs"
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: '0.35rem',
+              gap: '0.3rem',
               color: 'var(--text-muted)',
-              padding: '0.35rem 0.65rem',
+              padding: '0.3rem 0.6rem',
               border: '1px solid var(--border-subtle)',
               borderRadius: 'var(--radius-sm)',
+              flexShrink: 0,
             }}
             title="Exit interview session"
           >
-            <ArrowLeft size={15} />
-            <span>Exit</span>
+            <ArrowLeft size={14} />
+            <span className="hide-mobile">Exit</span>
           </button>
+
           <div style={{
-            width: 38,
-            height: 38,
+            width: 30,
+            height: 30,
             borderRadius: '50%',
             background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            boxShadow: '0 0 12px rgba(99, 102, 241, 0.4)',
+            boxShadow: '0 0 10px rgba(99, 102, 241, 0.35)',
+            flexShrink: 0,
           }}>
-            <Bot size={20} color="#fff" />
+            <Bot size={16} color="#fff" />
           </div>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <span style={{ fontWeight: 700, fontSize: '0.95rem', color: '#f9fafb' }}>
-                Alex Vance (AI Interviewer)
-              </span>
-              <span className="badge badge-primary" style={{ fontSize: '0.7rem' }}>
-                Adaptive Engine
-              </span>
-              <span className="badge badge-secondary" style={{ fontSize: '0.7rem' }}>
-                {interviewType} • {difficulty}
-              </span>
-            </div>
-            <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-              Resume-Aware Adaptive Session
-            </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', minWidth: 0, overflow: 'hidden' }}>
+            <span style={{ fontWeight: 700, fontSize: '0.88rem', color: '#f9fafb', whiteSpace: 'nowrap' }}>
+              Alex Vance
+            </span>
+            <span className="badge badge-primary hide-mobile" style={{ fontSize: '0.68rem', padding: '1px 6px', whiteSpace: 'nowrap' }}>
+              {interviewType} • {difficulty}
+            </span>
           </div>
-        </div>
 
-        {/* Center: Stage Progress Tracker */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-          {STAGES.map((s, idx) => {
-            const stageOrder = STAGES.findIndex((x) => x.key === currentStage);
-            const isPast = idx < stageOrder;
-            const isCurrent = idx === stageOrder;
-
-            return (
-              <div
-                key={s.key}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.35rem',
-                  padding: '0.25rem 0.6rem',
-                  borderRadius: 'var(--radius-sm)',
-                  background: isCurrent ? 'rgba(99, 102, 241, 0.2)' : isPast ? 'rgba(16, 185, 129, 0.1)' : 'transparent',
-                  border: isCurrent ? '1px solid #6366f1' : '1px solid transparent',
-                  color: isCurrent ? '#a5b4fc' : isPast ? '#34d399' : 'var(--text-muted)',
-                  fontSize: '0.75rem',
-                  fontWeight: isCurrent ? 700 : 500,
-                  transition: 'all 0.2s ease',
-                }}
-              >
-                {isPast ? <Check size={12} /> : <span>{idx + 1}</span>}
-                <span className="hide-mobile">{s.label.split('. ')[1]}</span>
-                {idx < STAGES.length - 1 && (
-                  <ChevronRight size={12} color="var(--border-subtle)" style={{ marginLeft: '0.2rem' }} />
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Right: Timer, Voice Toggle, Complete Button */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+          {/* Stage Progress Pill in Header */}
           <div style={{
             display: 'flex',
             alignItems: 'center',
             gap: '0.4rem',
+            padding: '0.2rem 0.6rem',
+            borderRadius: 'var(--radius-sm)',
+            background: 'rgba(99, 102, 241, 0.12)',
+            border: '1px solid rgba(99, 102, 241, 0.3)',
+            color: '#a5b4fc',
+            fontSize: '0.78rem',
+            fontWeight: 700,
+            whiteSpace: 'nowrap',
+            marginLeft: '0.25rem',
+          }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#818cf8', animation: 'pulse 1.5s infinite', flexShrink: 0 }} />
+            <span>Stage {STAGE_ORDER.indexOf(currentStage) + 1} of {STAGES.length}: {STAGES.find((s) => s.key === currentStage)?.label.replace(/^\d+\.\s*/, '')}</span>
+          </div>
+        </div>
+
+        {/* Right: Timer, Code Editor Toggle, Expand Button, Voice Toggle, Finish Button */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexShrink: 0 }}>
+          {/* Realtime Session Countdown Timer */}
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.35rem',
             background: 'var(--bg-input)',
-            padding: '0.4rem 0.75rem',
+            padding: '0.3rem 0.65rem',
             borderRadius: 'var(--radius-sm)',
             border: '1px solid var(--border-subtle)',
-            fontSize: '0.85rem',
-            fontWeight: 600,
+            fontSize: '0.82rem',
+            fontWeight: 700,
             color: remainingSeconds < 300 ? '#ef4444' : '#f9fafb',
+            fontFamily: 'var(--font-mono)',
           }}>
-            <Clock size={15} />
+            <Clock size={14} />
             <span>{formatTimer(remainingSeconds)}</span>
           </div>
 
+          {/* Code Editor Toggle Button */}
           <button
             type="button"
-            onClick={() => setCodingEditorOpen((prev) => !prev)}
+            onClick={() => {
+              const next = !codingEditorOpen;
+              setCodingEditorOpen(next);
+              setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
+            }}
             className="btn btn-sm"
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: '0.4rem',
-              background: isEditorVisible ? 'rgba(99, 102, 241, 0.2)' : 'rgba(255, 255, 255, 0.08)',
+              gap: '0.35rem',
+              background: isEditorVisible ? 'rgba(99, 102, 241, 0.2)' : 'rgba(255, 255, 255, 0.06)',
               border: isEditorVisible ? '1px solid #6366f1' : '1px solid var(--border-subtle)',
               color: isEditorVisible ? '#818cf8' : '#e2e8f0',
               fontWeight: 600,
-              padding: '0.4rem 0.85rem',
+              padding: '0.32rem 0.75rem',
+              fontSize: '0.8rem',
               cursor: 'pointer',
               transition: 'all 0.2s ease',
             }}
-            title={isEditorVisible ? 'Hide code editor workspace' : 'Open code editor workspace at any time'}
+            title={isEditorVisible ? 'Hide code editor workspace' : 'Open code editor workspace'}
           >
-            <Code2 size={16} />
-            <span>{isEditorVisible ? 'Hide Code Editor' : '💻 Open Code Editor'}</span>
+            <Code2 size={15} />
+            <span>{isEditorVisible ? 'Hide Editor' : '💻 Code Editor'}</span>
           </button>
 
+          {/* Fullscreen Expand Editor Toggle Button (Visible when editor active) */}
           {isEditorVisible && (
             <button
               type="button"
-              onClick={() => setEditorExpanded((prev) => !prev)}
+              onClick={() => {
+                const next = !editorExpanded;
+                setEditorExpanded(next);
+                setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
+              }}
               className="btn btn-sm"
               style={{
                 display: 'flex',
                 alignItems: 'center',
-                gap: '0.4rem',
-                background: editorExpanded ? 'rgba(99, 102, 241, 0.25)' : 'rgba(255, 255, 255, 0.08)',
+                gap: '0.35rem',
+                background: editorExpanded ? 'rgba(99, 102, 241, 0.25)' : 'rgba(255, 255, 255, 0.06)',
                 border: editorExpanded ? '1px solid #6366f1' : '1px solid var(--border-subtle)',
                 color: editorExpanded ? '#a5b4fc' : '#e2e8f0',
                 fontWeight: 600,
-                padding: '0.4rem 0.85rem',
+                padding: '0.32rem 0.75rem',
+                fontSize: '0.8rem',
                 cursor: 'pointer',
                 transition: 'all 0.2s ease',
               }}
-              title={editorExpanded ? 'Exit fullscreen coding workspace' : 'Expand coding workspace to full width'}
+              title={editorExpanded ? 'Exit fullscreen workspace' : 'Expand workspace to true fullscreen'}
             >
-              {editorExpanded ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
-              <span>{editorExpanded ? '↙ Exit Fullscreen' : '⛶ Expand Editor'}</span>
+              {editorExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+              <span>{editorExpanded ? 'Exit Fullscreen' : '⛶ Expand'}</span>
             </button>
           )}
 
+          {/* Voice Audio Toggle */}
           <button
             onClick={() => setVoiceEnabled(!voiceEnabled)}
-            className="btn btn-ghost btn-sm"
-            style={{ color: voiceEnabled ? '#10b981' : 'var(--text-muted)' }}
+            className="btn btn-ghost btn-xs"
+            style={{ color: voiceEnabled ? '#10b981' : 'var(--text-muted)', padding: '0.35rem' }}
             title={voiceEnabled ? 'Voice output enabled' : 'Voice output muted'}
           >
-            {voiceEnabled ? <Volume2 size={18} /> : <VolumeX size={18} />}
+            {voiceEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}
           </button>
 
+          {/* Finish Interview Button */}
           <button
             onClick={handleCompleteInterview}
             disabled={completing}
@@ -1526,728 +1557,1055 @@ export default function AIInterviewPage() {
             style={{
               display: 'flex',
               alignItems: 'center',
-              gap: '0.4rem',
+              gap: '0.35rem',
               background: 'rgba(239, 68, 68, 0.12)',
               border: '1px solid rgba(239, 68, 68, 0.4)',
               color: '#f87171',
               fontWeight: 600,
-              padding: '0.4rem 0.85rem',
+              padding: '0.32rem 0.75rem',
+              fontSize: '0.8rem',
               cursor: completing ? 'not-allowed' : 'pointer',
               transition: 'all 0.2s ease',
             }}
           >
-            <CheckCircle2 size={15} />
-            <span>{completing ? '⏳ Finishing Interview...' : 'Finish Interview'}</span>
+            <CheckCircle2 size={14} />
+            <span>{completing ? 'Finishing...' : 'Finish Interview'}</span>
           </button>
         </div>
-      </div>
+      </header>
 
-      {/* MAIN CONTENT AREA */}
-      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: (isEditorVisible && editorExpanded) ? '1fr 0px' : isEditorVisible ? '1fr 340px' : '1fr 320px', overflow: 'hidden' }}>
-        
-        {/* LEFT / CENTER VIEW */}
-        <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-          
-          {/* CONTEST CODING VIEW (Problem Statement Top + Resizable Divider + Monaco IDE Center + Console Bottom + Submit Bar) */}
-          {isEditorVisible ? (
-            <div style={{ 
-              flex: 1, 
-              display: 'flex',
-              flexDirection: 'column',
-              height: '100%', 
-              overflow: 'hidden',
-              userSelect: isResizingProblem ? 'none' : 'auto',
-            }}>
-              {/* Problem Statement Section (Top) */}
-              <div style={{
-                height: problemCollapsed ? '40px' : `${problemHeight}px`,
-                overflow: 'hidden',
-                background: '#0d1321',
-                borderBottom: '1px solid var(--border-subtle)',
-                display: 'flex',
-                flexDirection: 'column',
-                flexShrink: 0,
-                transition: isResizingProblem ? 'none' : 'height 0.15s ease',
-              }}>
-                <div style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'space-between',
-                  padding: '0.35rem 1rem',
-                  background: '#090d16',
-                  borderBottom: '1px solid var(--border-subtle)',
-                  flexShrink: 0,
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
-                    <span style={{ fontWeight: 700, fontSize: '0.85rem', color: '#f8fafc' }}>
-                      {activeCodingProblem?.title || 'Coding Problem'}
-                    </span>
-                    <span style={{
-                      fontSize: '0.72rem',
-                      fontWeight: 700,
-                      padding: '0.12rem 0.5rem',
-                      borderRadius: '12px',
-                      background: activeCodingProblem?.difficulty === 'Easy' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)',
-                      color: activeCodingProblem?.difficulty === 'Easy' ? '#34d399' : '#fbbf24',
-                      border: `1px solid ${activeCodingProblem?.difficulty === 'Easy' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`,
-                    }}>
-                      {activeCodingProblem?.difficulty || 'Medium'}
-                    </span>
-                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                      Topic: <span style={{ color: '#94a3b8' }}>{activeCodingProblem?.topic || 'Algorithms'}</span>
-                    </span>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setProblemCollapsed((prev) => !prev)}
-                    className="btn btn-outline btn-sm"
-                    style={{
-                      padding: '0.2rem 0.6rem',
-                      fontSize: '0.72rem',
-                      color: '#a5b4fc',
-                      borderColor: 'var(--border-subtle)',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.3rem',
-                    }}
-                    title={problemCollapsed ? "Expand problem description" : "Collapse problem description to give editor more space"}
-                  >
-                    <span>{problemCollapsed ? '▼ Show Problem' : '▲ Collapse Problem'}</span>
-                  </button>
-                </div>
-
-                {!problemCollapsed && (
-                  <div style={{ flex: 1, overflowY: 'auto' }}>
-                    <LeetCodeQuestionPanel
-                      question={activeCodingProblem || DEFAULT_CODING_PROBLEM}
-                      activeQuestion={activeCodingProblem || DEFAULT_CODING_PROBLEM}
-                      questions={[activeCodingProblem || DEFAULT_CODING_PROBLEM]}
-                    />
-                  </div>
-                )}
-              </div>
-
-              {/* Draggable Divider (Problem Statement <-> Monaco Code Editor) */}
-              {!problemCollapsed && (
-                <div
-                  onMouseDown={handleMouseDownProblemResize}
-                  title="Drag to resize Problem Statement and Code Editor"
-                  style={{
-                    height: '6px',
-                    cursor: 'row-resize',
-                    background: isResizingProblem ? '#6366f1' : 'rgba(255, 255, 255, 0.08)',
-                    zIndex: 10,
-                    transition: isResizingProblem ? 'none' : 'background 0.2s',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    flexShrink: 0,
-                  }}
-                >
-                  <div style={{ width: '36px', height: '2px', background: isResizingProblem ? '#a5b4fc' : 'rgba(255, 255, 255, 0.25)', borderRadius: '1px' }} />
-                </div>
-              )}
-
-              {/* Monaco Code Editor Workspace (Large, Manageable, Contest-Style) */}
-              <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                <CollaborativeCodeEditor
-                  code={code}
-                  language={language}
-                  onCodeChange={handleCodeChange}
-                  onLanguageChange={handleLanguageChange}
-                  onResetTemplate={handleResetTemplate}
-                  interviewId={interview?.id || 'mock-ai-room'}
-                  questionId={activeCodingProblem?.id || 'two-sum'}
-                  testCases={activeCodingProblem?.testCases || []}
-                  isExpanded={editorExpanded}
-                  onToggleExpand={() => setEditorExpanded((prev) => !prev)}
-                  onSubmit={handleCompleteCodingStage}
-                  isSubmitting={isAiTyping || inFlightRef.current || completing}
-                  onSkip={handleSkipCodingStage}
-                  readOnly={false}
-                />
-              </div>
-
-              {/* Pinned Bottom Submit Solution & Skip Bar */}
-              <div style={{
-                padding: '0.55rem 1.25rem',
-                background: '#0d111b',
-                borderTop: '1px solid var(--border-subtle)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: '1rem',
-                flexWrap: 'wrap',
-                flexShrink: 0,
-                zIndex: 15,
-              }}>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  Language: <span style={{ color: '#38bdf8', fontWeight: 600 }}>{language.toUpperCase()}</span> • Codeforces style: read from standard input, write to standard output.
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                  <button
-                    type="button"
-                    onClick={handleSkipCodingStage}
-                    disabled={isAiTyping || inFlightRef.current || completing}
-                    className="btn btn-outline-danger btn-sm"
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.4rem',
-                      borderColor: 'rgba(239, 68, 68, 0.4)',
-                      color: '#f87171',
-                      background: 'rgba(239, 68, 68, 0.05)',
-                      cursor: isAiTyping || inFlightRef.current || completing ? 'not-allowed' : 'pointer',
-                    }}
-                    title="Skip this coding problem if you are stuck or unable to solve it"
-                  >
-                    <HelpCircle size={15} />
-                    <span>I Can't Solve This</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleCompleteCodingStage}
-                    disabled={isAiTyping || inFlightRef.current || completing}
-                    className="btn btn-primary btn-sm"
-                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 600 }}
-                  >
-                    <CheckCircle2 size={16} />
-                    <span>{currentStage === 'coding' ? 'Submit Solution & Continue to Review →' : 'Save & Submit Solution'}</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          ) : (
-            /* STAGES 1-4, 6-7: CONVERSATIONAL STAGE VIEW */
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
-              {/* Stage Banner */}
-              <div style={{
-                background: 'rgba(99, 102, 241, 0.05)',
-                borderBottom: '1px solid var(--border-subtle)',
-                padding: '0.75rem 1.5rem',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                  <Sparkles size={16} color="#818cf8" />
-                  <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#f9fafb' }}>
-                    {STAGES.find((s) => s.key === currentStage)?.label}: {STAGES.find((s) => s.key === currentStage)?.desc}
-                  </span>
-                  {stageFollowUpCount > 0 && (
-                    <span className="badge badge-primary" style={{ fontSize: '0.7rem' }}>
-                      Follow-up In Progress
-                    </span>
-                  )}
-                </div>
-                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                  Alex is analyzing your reasoning, depth, and communication.
-                </div>
-              </div>
-
-              {/* Chat Message Scroll List */}
-              <div style={{
-                flex: 1,
-                overflowY: 'auto',
-                padding: '1.5rem',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '1.25rem',
-              }}>
-                {messages.map((m, idx) => {
-                  const isUser = m.role === 'user';
-                  return (
-                    <div
-                      key={idx}
-                      style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        alignItems: isUser ? 'flex-end' : 'flex-start',
-                        maxWidth: '85%',
-                        alignSelf: isUser ? 'flex-end' : 'flex-start',
-                      }}
-                    >
-                      <div style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '0.5rem',
-                        marginBottom: '0.35rem',
-                        fontSize: '0.75rem',
-                        color: 'var(--text-muted)',
-                      }}>
-                        {isUser ? (
-                          <>
-                            <span>{m.timestamp}</span>
-                            <span style={{ fontWeight: 600, color: '#cbd5e1' }}>You</span>
-                            <User size={14} />
-                          </>
-                        ) : (
-                          <>
-                            <Bot size={14} color="#818cf8" />
-                            <span style={{ fontWeight: 600, color: '#a5b4fc' }}>Alex Vance</span>
-                            <span>{m.timestamp}</span>
-                          </>
-                        )}
-                      </div>
-
-                      <div
-                        style={{
-                          padding: '1rem 1.25rem',
-                          borderRadius: isUser ? '16px 16px 2px 16px' : '16px 16px 16px 2px',
-                          background: isUser ? '#4f46e5' : '#1e293b',
-                          color: '#fff',
-                          fontSize: '0.95rem',
-                          lineHeight: '1.6',
-                          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.25)',
-                        }}
-                      >
-                        {m.content}
-                      </div>
-                    </div>
-                  );
-                })}
-
-                {isAiTyping && (
-                  <div style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#a5b4fc', fontSize: '0.85rem' }}>
-                    <RotateCw size={14} className="spin" />
-                    <span>Alex is thinking & analyzing...</span>
-                  </div>
-                )}
-                <div ref={messagesEndRef} />
-              </div>
-            </div>
-          )}
-
-          {/* CANDIDATE INPUT AREA (Only in conversational stages; in coding stage it lives in right sidebar) */}
-          {currentStage !== 'coding' && (
-            <div style={{
-              background: '#0d111b',
-              borderTop: '1px solid var(--border-subtle)',
-              padding: '1rem 1.5rem',
-              flexShrink: 0,
-            }}>
-              {/* Input Mode Selector */}
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <button
-                    onClick={() => setInputMode('speak')}
-                    className={`btn btn-xs ${inputMode === 'speak' ? 'btn-primary' : 'btn-ghost'}`}
-                    style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
-                  >
-                    <Mic size={14} />
-                    <span>Voice (Speech-to-Text)</span>
-                  </button>
-                  <button
-                    onClick={() => setInputMode('type')}
-                    className={`btn btn-xs ${inputMode === 'type' ? 'btn-primary' : 'btn-ghost'}`}
-                    style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
-                  >
-                    <Keyboard size={14} />
-                    <span>Keyboard Typing</span>
-                  </button>
-                </div>
-
-                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                  {inputMode === 'speak' ? 'Click microphone to speak naturally' : 'Press Enter to submit answer'}
-                </div>
-              </div>
-
-              {/* SPEAK MODE: Large Voice Capture Interface */}
-              {inputMode === 'speak' && (
-                <div style={{
-                  background: 'var(--bg-input)',
-                  border: isListening ? '1px solid #ef4444' : '1px solid var(--border-subtle)',
-                  borderRadius: 'var(--radius-md)',
-                  padding: '0.85rem 1.25rem',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '0.75rem',
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                      <div style={{
-                        width: 10,
-                        height: 10,
-                        borderRadius: '50%',
-                        background: isListening ? '#ef4444' : '#6b7280',
-                        boxShadow: isListening ? '0 0 8px #ef4444' : 'none',
-                      }} />
-                      <span style={{ fontSize: '0.875rem', color: isListening ? '#f87171' : 'var(--text-secondary)' }}>
-                        {isListening ? 'Listening to your microphone... speak clearly' : transcript ? 'Voice captured. You can send or edit below.' : 'Microphone idle. Click the button to start speaking.'}
-                      </span>
-                    </div>
-
-                    <button
-                      onClick={() => {
-                        if (isListening) {
-                          stopListening();
-                        } else {
-                          resetTranscript();
-                          startListening();
-                        }
-                      }}
-                      style={{
-                        width: 44,
-                        height: 44,
-                        borderRadius: '50%',
-                        background: isListening ? '#ef4444' : '#6366f1',
-                        border: 'none',
-                        color: '#fff',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        cursor: 'pointer',
-                        boxShadow: isListening ? '0 0 16px rgba(239, 68, 68, 0.5)' : '0 0 12px rgba(99, 102, 241, 0.4)',
-                        transition: 'all 0.2s ease',
-                        flexShrink: 0,
-                      }}
-                      title={isListening ? 'Stop Listening' : 'Click to Speak'}
-                    >
-                      {isListening ? <MicOff size={22} /> : <Mic size={22} />}
-                    </button>
-                  </div>
-
-                  {/* Transcript Action Controls */}
-                  {transcript && (
-                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem' }}>
-                      <button
-                        onClick={() => {
-                          stopListening();
-                          setUserInput(transcript);
-                          setInputMode('type');
-                        }}
-                        className="btn btn-outline btn-sm"
-                        style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
-                      >
-                        <Edit3 size={13} />
-                        <span>Edit Transcript</span>
-                      </button>
-                      <button
-                        onClick={() => handleSendResponse(transcript)}
-                        disabled={isAiTyping || inFlightRef.current}
-                        className="btn btn-primary btn-sm"
-                        style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
-                      >
-                        <Send size={13} />
-                        <span>Send Answer</span>
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* TYPE MODE: Direct Text Input Bar */}
-              {inputMode === 'type' && (
-                <form onSubmit={(e) => { e.preventDefault(); handleSendResponse(userInput); }} style={{ display: 'flex', gap: '0.75rem' }}>
-                  <textarea
-                    rows={2}
-                    placeholder="Type your response to the interviewer..."
-                    value={userInput}
-                    onChange={(e) => setUserInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        handleSendResponse(userInput);
-                      }
-                    }}
-                    style={{
-                      flex: 1,
-                      background: 'var(--bg-input)',
-                      border: '1px solid var(--border-subtle)',
-                      borderRadius: 'var(--radius-md)',
-                      padding: '0.75rem 1rem',
-                      color: '#f9fafb',
-                      fontSize: '0.925rem',
-                      resize: 'none',
-                    }}
-                  />
-                  <button
-                    type="submit"
-                    disabled={!userInput.trim() || isAiTyping || inFlightRef.current}
-                    className="btn btn-primary"
-                    style={{ padding: '0 1.5rem', display: 'flex', alignItems: 'center', gap: '0.4rem' }}
-                  >
-                    <Send size={16} />
-                    <span>Send</span>
-                  </button>
-                </form>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* RIGHT PANEL: AI INTERVIEW CHAT (during Coding / Editor View) OR 7-STAGE PROGRESS & RESUME CONTEXT (other stages) */}
-        {isEditorVisible ? (
+      {/* =========================================================================
+          TRUE FULLSCREEN CODING IDE (100vw × 100vh)
+          Appears when candidate clicks Expand Editor.
+          Does NOT unmount components or reset code/state.
+          ========================================================================= */}
+      {editorExpanded && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          width: '100vw',
+          height: '100vh',
+          zIndex: 99999,
+          background: '#080c14',
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+        }}>
+          {/* Fullscreen IDE Top Bar */}
           <div style={{
-            background: '#0e1422',
-            borderLeft: '1px solid var(--border-subtle)',
-            display: (isEditorVisible && editorExpanded) ? 'none' : 'flex',
-            flexDirection: 'column',
-            height: '100%',
-            overflow: 'hidden',
+            height: '46px',
+            minHeight: '46px',
+            background: '#0b101c',
+            borderBottom: '1px solid var(--border-subtle)',
+            padding: '0 1rem',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexShrink: 0,
+            gap: '1rem',
           }}>
-            {/* Coding Chat Header */}
-            <div style={{
-              padding: '0.75rem 1rem',
-              background: '#0a0e1a',
-              borderBottom: '1px solid var(--border-subtle)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.65rem',
-              flexShrink: 0,
-            }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
               <div style={{
-                width: 32,
-                height: 32,
-                borderRadius: '50%',
-                background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                width: 26,
+                height: 26,
+                borderRadius: '6px',
+                background: 'linear-gradient(135deg, #6366f1, #38bdf8)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 color: '#fff',
-                flexShrink: 0,
+                fontSize: '0.75rem',
+                fontWeight: 800,
               }}>
-                <Bot size={17} />
+                CF
               </div>
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ fontSize: '0.875rem', fontWeight: 700, color: '#f9fafb', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                  <span>Alex Vance</span>
-                  <span className="badge badge-success" style={{ fontSize: '0.65rem', padding: '1px 5px' }}>Live</span>
-                </div>
-                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                  Ask questions or discuss solution approach
-                </div>
-              </div>
+              <span style={{ fontWeight: 800, fontSize: '0.88rem', color: '#f8fafc' }}>
+                {activeCodingProblem?.title || 'Coding Problem'}
+              </span>
+              <span style={{
+                fontSize: '0.7rem',
+                fontWeight: 700,
+                padding: '0.1rem 0.5rem',
+                borderRadius: '10px',
+                background: activeCodingProblem?.difficulty === 'Easy' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)',
+                color: activeCodingProblem?.difficulty === 'Easy' ? '#34d399' : '#fbbf24',
+                border: `1px solid ${activeCodingProblem?.difficulty === 'Easy' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`,
+              }}>
+                {activeCodingProblem?.difficulty || 'Medium'}
+              </span>
             </div>
 
-            {/* Coding Chat Messages */}
-            <div style={{
-              flex: 1,
-              overflowY: 'auto',
-              padding: '1rem',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.85rem',
-            }}>
-              {messages.map((m, idx) => {
-                const isUser = m.role === 'user';
-                return (
-                  <div
-                    key={idx}
-                    style={{
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: isUser ? 'flex-end' : 'flex-start',
-                      maxWidth: '92%',
-                      alignSelf: isUser ? 'flex-end' : 'flex-start',
-                    }}
-                  >
-                    <div style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.35rem',
-                      marginBottom: '0.2rem',
-                      fontSize: '0.7rem',
-                      color: 'var(--text-muted)',
-                    }}>
-                      {isUser ? (
-                        <><span>{m.timestamp}</span><span>You</span></>
-                      ) : (
-                        <><span style={{ color: '#a5b4fc', fontWeight: 600 }}>Alex</span><span>{m.timestamp}</span></>
-                      )}
-                    </div>
-                    <div
-                      style={{
-                        padding: '0.65rem 0.85rem',
-                        borderRadius: isUser ? '12px 12px 2px 12px' : '12px 12px 12px 2px',
-                        background: isUser ? '#4f46e5' : '#1e293b',
-                        color: '#fff',
-                        fontSize: '0.85rem',
-                        lineHeight: '1.5',
-                        boxShadow: '0 2px 6px rgba(0, 0, 0, 0.2)',
-                      }}
-                    >
-                      {m.content}
-                    </div>
-                  </div>
-                );
-              })}
-              {isAiTyping && (
-                <div style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '0.4rem', color: '#a5b4fc', fontSize: '0.78rem' }}>
-                  <RotateCw size={12} className="spin" />
-                  <span>Alex is analyzing...</span>
-                </div>
-              )}
-              <div ref={messagesEndRef} />
-            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setProblemCollapsed((prev) => !prev);
+                  setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
+                }}
+                className="btn btn-outline btn-xs"
+                style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#a5b4fc', borderColor: 'var(--border-subtle)' }}
+              >
+                <FileText size={13} />
+                <span>{problemCollapsed ? 'Show Problem Panel' : 'Hide Problem Panel'}</span>
+              </button>
 
-            {/* Compact Chat Input Bar for Coding Stage */}
-            <div style={{
-              padding: '0.65rem 0.85rem',
-              background: '#0a0e1a',
-              borderTop: '1px solid var(--border-subtle)',
-              flexShrink: 0,
-            }}>
-              <form onSubmit={(e) => { e.preventDefault(); handleSendResponse(userInput); }} style={{ display: 'flex', gap: '0.4rem' }}>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (isListening) {
-                      stopListening();
-                    } else {
-                      resetTranscript();
-                      startListening();
-                    }
-                  }}
-                  className={`btn btn-sm ${isListening ? 'btn-danger' : 'btn-ghost'}`}
-                  style={{ padding: '0.4rem', color: isListening ? '#fff' : '#818cf8', flexShrink: 0 }}
-                  title={isListening ? 'Stop recording voice' : 'Speak to Alex'}
-                >
-                  {isListening ? <MicOff size={15} /> : <Mic size={15} />}
-                </button>
-                <input
-                  type="text"
-                  placeholder="Ask Alex or clarify..."
-                  value={userInput}
-                  onChange={(e) => setUserInput(e.target.value)}
-                  disabled={isAiTyping || inFlightRef.current}
-                  style={{
-                    flex: 1,
-                    background: 'var(--bg-input)',
-                    border: '1px solid var(--border-subtle)',
-                    borderRadius: 'var(--radius-sm)',
-                    padding: '0.4rem 0.65rem',
-                    color: '#f9fafb',
-                    fontSize: '0.82rem',
-                  }}
-                />
-                <button
-                  type="submit"
-                  disabled={!userInput.trim() || isAiTyping || inFlightRef.current}
-                  className="btn btn-primary btn-sm"
-                  style={{ padding: '0.4rem 0.65rem' }}
-                >
-                  <Send size={13} />
-                </button>
-              </form>
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.35rem',
+                background: 'var(--bg-input)',
+                padding: '0.25rem 0.6rem',
+                borderRadius: 'var(--radius-sm)',
+                border: '1px solid var(--border-subtle)',
+                fontSize: '0.8rem',
+                fontWeight: 700,
+                color: remainingSeconds < 300 ? '#ef4444' : '#f9fafb',
+                fontFamily: 'var(--font-mono)',
+              }}>
+                <Clock size={13} />
+                <span>{formatTimer(remainingSeconds)}</span>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setEditorExpanded(false);
+                  setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
+                }}
+                className="btn btn-primary btn-sm"
+                style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontWeight: 600 }}
+                title="Exit fullscreen coding mode (Esc)"
+              >
+                <Minimize2 size={14} />
+                <span>Exit Fullscreen</span>
+              </button>
             </div>
           </div>
-        ) : (
-          /* STANDARD RIGHT PANEL: 7-STAGE PROGRESS & RESUME CONTEXT */
-          <div style={{
-            background: '#0e1422',
-            borderLeft: '1px solid var(--border-subtle)',
-            padding: '1.75rem 1.25rem',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: '1.75rem',
-            overflowY: 'auto',
-          }}>
-            {/* Stepper Header */}
-            <div>
-              <h3 style={{ fontSize: '1rem', color: '#f9fafb', marginBottom: '0.25rem' }}>
-                Interview Progress
-              </h3>
-              <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                Deterministic 7-Stage State Machine
-              </p>
+
+          {/* Fullscreen Split Area: Left Problem Statement Panel + Right Monaco Editor */}
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', width: '100%', overflow: 'hidden' }}>
+            {!problemCollapsed && (
+              <div style={{
+                width: '380px',
+                minWidth: '280px',
+                maxWidth: '480px',
+                height: '100%',
+                background: '#0d1321',
+                borderRight: '1px solid var(--border-subtle)',
+                display: 'flex',
+                flexDirection: 'column',
+                overflow: 'hidden',
+                flexShrink: 0,
+              }}>
+                <div style={{
+                  padding: '0.5rem 1rem',
+                  background: '#090d16',
+                  borderBottom: '1px solid var(--border-subtle)',
+                  fontSize: '0.78rem',
+                  fontWeight: 700,
+                  color: '#cbd5e1',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                }}>
+                  <span>Problem Statement</span>
+                  <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>Codeforces Mode</span>
+                </div>
+                <div style={{ flex: 1, overflowY: 'auto' }}>
+                  <LeetCodeQuestionPanel
+                    question={activeCodingProblem || DEFAULT_CODING_PROBLEM}
+                    activeQuestion={activeCodingProblem || DEFAULT_CODING_PROBLEM}
+                    questions={[activeCodingProblem || DEFAULT_CODING_PROBLEM]}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* Monaco Workspace */}
+            <div style={{ flex: 1, minWidth: 0, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+              <CollaborativeCodeEditor
+                code={code}
+                language={language}
+                onCodeChange={handleCodeChange}
+                onLanguageChange={handleLanguageChange}
+                onResetTemplate={handleResetTemplate}
+                interviewId={interview?.id || 'mock-ai-room'}
+                questionId={activeCodingProblem?.id || 'two-sum'}
+                testCases={activeCodingProblem?.testCases || []}
+                isExpanded={true}
+                onToggleExpand={() => {
+                  setEditorExpanded(false);
+                  setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
+                }}
+                onSubmit={handleCompleteCodingStage}
+                isSubmitting={isAiTyping || inFlightRef.current || completing}
+                onSkip={handleSkipCodingStage}
+                readOnly={false}
+              />
             </div>
+          </div>
+        </div>
+      )}
 
-            {/* Stepper Progress List */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
-              {STAGES.map((s, idx) => {
-                const stageOrder = STAGES.findIndex((x) => x.key === currentStage);
-                const isPast = idx < stageOrder;
-                const isCurrent = idx === stageOrder;
+      {/* =========================================================================
+          MAIN APPLICATION WORKSPACE (Sidebar + Main Content Area)
+          Uses 100% of the viewport width.
+          ========================================================================= */}
+      <div style={{
+        flex: 1,
+        minHeight: 0,
+        display: 'flex',
+        width: '100%',
+        maxWidth: '100vw',
+        overflow: 'hidden',
+      }}>
+        {/* LEFT VERTICAL INTERVIEW STAGE SIDEBAR */}
+        <InterviewStageSidebar
+          stages={STAGES}
+          currentStage={currentStage}
+          stageOrder={STAGE_ORDER}
+          collapsed={stageSidebarCollapsed}
+          onToggleCollapse={() => {
+            setStageSidebarCollapsed((prev) => !prev);
+            setTimeout(() => window.dispatchEvent(new Event('resize')), 250);
+          }}
+          interviewType={interviewType}
+          difficulty={difficulty}
+          candidateHasResume={Boolean(candidateResume)}
+        />
 
-                return (
+        {/* MAIN INTERVIEW AREA (Flex 1, minWidth 0 to fill all remaining width without blowout) */}
+        <main style={{
+          flex: 1,
+          minWidth: 0,
+          width: '100%',
+          height: '100%',
+          display: 'flex',
+          flexDirection: 'column',
+          overflow: 'hidden',
+          background: '#090d16',
+        }}>
+          {isEditorVisible ? (
+            /* =======================================================================
+               CODING INTERVIEW WORKSPACE (Problem Top + Monaco Center + Console Bottom + AI Chat Right)
+               ======================================================================= */
+            <div style={{
+              flex: 1,
+              minHeight: 0,
+              display: 'flex',
+              width: '100%',
+              height: '100%',
+              overflow: 'hidden',
+            }}>
+              {/* Left Coding Area: Problem Statement + Divider + Monaco IDE + Submit Bar */}
+              <div style={{
+                flex: 1,
+                minWidth: 0,
+                display: 'flex',
+                flexDirection: 'column',
+                height: '100%',
+                overflow: 'hidden',
+                userSelect: isResizingProblem ? 'none' : 'auto',
+              }}>
+                {/* Problem Statement Card (Top) */}
+                <div style={{
+                  height: problemCollapsed ? '40px' : `${problemHeight}px`,
+                  overflow: 'hidden',
+                  background: '#0d1321',
+                  borderBottom: '1px solid var(--border-subtle)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  flexShrink: 0,
+                  transition: isResizingProblem ? 'none' : 'height 0.15s ease',
+                }}>
+                  <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '0.35rem 1rem',
+                    background: '#090d16',
+                    borderBottom: '1px solid var(--border-subtle)',
+                    flexShrink: 0,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+                      <span style={{ fontWeight: 700, fontSize: '0.85rem', color: '#f8fafc' }}>
+                        {activeCodingProblem?.title || 'Coding Problem'}
+                      </span>
+                      <span style={{
+                        fontSize: '0.72rem',
+                        fontWeight: 700,
+                        padding: '0.12rem 0.5rem',
+                        borderRadius: '12px',
+                        background: activeCodingProblem?.difficulty === 'Easy' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)',
+                        color: activeCodingProblem?.difficulty === 'Easy' ? '#34d399' : '#fbbf24',
+                        border: `1px solid ${activeCodingProblem?.difficulty === 'Easy' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`,
+                      }}>
+                        {activeCodingProblem?.difficulty || 'Medium'}
+                      </span>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                        Topic: <span style={{ color: '#94a3b8' }}>{activeCodingProblem?.topic || 'Algorithms'}</span>
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowAiChatInCoding((prev) => !prev);
+                          setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
+                        }}
+                        className="btn btn-outline btn-xs"
+                        style={{
+                          padding: '0.2rem 0.6rem',
+                          fontSize: '0.72rem',
+                          borderColor: 'var(--border-subtle)',
+                          color: showAiChatInCoding ? '#818cf8' : 'var(--text-muted)',
+                        }}
+                        title={showAiChatInCoding ? 'Hide AI Chat Assistant drawer' : 'Show AI Chat Assistant drawer'}
+                      >
+                        <Bot size={13} />
+                        <span>{showAiChatInCoding ? 'Hide AI Chat' : 'Ask Alex'}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setProblemCollapsed((prev) => !prev)}
+                        className="btn btn-outline btn-xs"
+                        style={{
+                          padding: '0.2rem 0.6rem',
+                          fontSize: '0.72rem',
+                          color: '#a5b4fc',
+                          borderColor: 'var(--border-subtle)',
+                        }}
+                        title={problemCollapsed ? 'Expand problem description' : 'Collapse problem description'}
+                      >
+                        <span>{problemCollapsed ? '▼ Show Problem' : '▲ Collapse'}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {!problemCollapsed && (
+                    <div style={{ flex: 1, overflowY: 'auto' }}>
+                      <LeetCodeQuestionPanel
+                        question={activeCodingProblem || DEFAULT_CODING_PROBLEM}
+                        activeQuestion={activeCodingProblem || DEFAULT_CODING_PROBLEM}
+                        questions={[activeCodingProblem || DEFAULT_CODING_PROBLEM]}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {/* Draggable Divider between Problem and Monaco */}
+                {!problemCollapsed && (
                   <div
-                    key={s.key}
+                    onMouseDown={handleMouseDownProblemResize}
                     style={{
-                      display: 'flex',
-                      alignItems: 'flex-start',
-                      gap: '0.75rem',
-                      padding: '0.65rem 0.85rem',
-                      borderRadius: 'var(--radius-sm)',
-                      background: isCurrent ? 'rgba(99, 102, 241, 0.12)' : 'transparent',
-                      border: isCurrent ? '1px solid rgba(99, 102, 241, 0.35)' : '1px solid transparent',
-                      transition: 'all 0.2s ease',
-                    }}
-                  >
-                    <div style={{
-                      width: 22,
-                      height: 22,
-                      borderRadius: '50%',
-                      background: isPast ? '#10b981' : isCurrent ? '#6366f1' : 'var(--bg-input)',
-                      color: isPast || isCurrent ? '#fff' : 'var(--text-muted)',
+                      height: '6px',
+                      cursor: 'row-resize',
+                      background: isResizingProblem ? '#6366f1' : 'rgba(255, 255, 255, 0.08)',
+                      zIndex: 10,
+                      transition: isResizingProblem ? 'none' : 'background 0.2s',
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'center',
-                      fontSize: '0.7rem',
-                      fontWeight: 700,
                       flexShrink: 0,
-                      marginTop: '0.1rem',
-                    }}>
-                      {isPast ? <Check size={13} /> : idx + 1}
-                    </div>
-                    <div>
-                      <div style={{ fontSize: '0.85rem', fontWeight: isCurrent ? 700 : 500, color: isCurrent ? '#a5b4fc' : isPast ? '#f9fafb' : 'var(--text-muted)' }}>
-                        {s.label}
-                      </div>
-                      <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-                        {s.desc}
-                      </div>
-                    </div>
+                    }}
+                  >
+                    <div style={{ width: '36px', height: '2px', background: isResizingProblem ? '#a5b4fc' : 'rgba(255, 255, 255, 0.25)', borderRadius: '1px' }} />
                   </div>
-                );
-              })}
-            </div>
+                )}
 
-            {/* Candidate Resume Context Pill */}
-            <div style={{
-              background: 'rgba(16, 185, 129, 0.05)',
-              border: '1px solid rgba(16, 185, 129, 0.2)',
-              borderRadius: 'var(--radius-md)',
-              padding: '1rem',
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.5rem', color: '#10b981' }}>
-                <CheckCircle2 size={16} />
-                <span style={{ fontWeight: 700, fontSize: '0.85rem' }}>Resume: Analyzed</span>
+                {/* Monaco Code Editor Workspace */}
+                <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                  <CollaborativeCodeEditor
+                    code={code}
+                    language={language}
+                    onCodeChange={handleCodeChange}
+                    onLanguageChange={handleLanguageChange}
+                    onResetTemplate={handleResetTemplate}
+                    interviewId={interview?.id || 'mock-ai-room'}
+                    questionId={activeCodingProblem?.id || 'two-sum'}
+                    testCases={activeCodingProblem?.testCases || []}
+                    isExpanded={editorExpanded}
+                    onToggleExpand={() => {
+                      setEditorExpanded((prev) => !prev);
+                      setTimeout(() => window.dispatchEvent(new Event('resize')), 100);
+                    }}
+                    onSubmit={handleCompleteCodingStage}
+                    isSubmitting={isAiTyping || inFlightRef.current || completing}
+                    onSkip={handleSkipCodingStage}
+                    readOnly={false}
+                  />
+                </div>
+
+                {/* Pinned Bottom Submit Solution & Skip Bar */}
+                <div style={{
+                  padding: '0.45rem 1rem',
+                  background: '#0c121e',
+                  borderTop: '1px solid var(--border-subtle)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '1rem',
+                  flexWrap: 'wrap',
+                  flexShrink: 0,
+                  zIndex: 15,
+                }}>
+                  <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                    Language: <span style={{ color: '#38bdf8', fontWeight: 600 }}>{language.toUpperCase()}</span> • Codeforces mode: read from standard input, write to standard output.
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                    <button
+                      type="button"
+                      onClick={handleSkipCodingStage}
+                      disabled={isAiTyping || inFlightRef.current || completing}
+                      className="btn btn-outline-danger btn-sm"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.35rem',
+                        borderColor: 'rgba(239, 68, 68, 0.4)',
+                        color: '#f87171',
+                        background: 'rgba(239, 68, 68, 0.05)',
+                        cursor: isAiTyping || inFlightRef.current || completing ? 'not-allowed' : 'pointer',
+                        padding: '0.3rem 0.75rem',
+                        fontSize: '0.78rem',
+                      }}
+                      title="Skip this coding problem if you are stuck or unable to solve it"
+                    >
+                      <HelpCircle size={14} />
+                      <span>I Can't Solve This</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleCompleteCodingStage}
+                      disabled={isAiTyping || inFlightRef.current || completing}
+                      className="btn btn-primary btn-sm"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.45rem',
+                        fontWeight: 600,
+                        padding: '0.3rem 0.85rem',
+                        fontSize: '0.8rem',
+                      }}
+                    >
+                      <CheckCircle2 size={15} />
+                      <span>{currentStage === 'coding' ? 'Submit Solution & Continue →' : 'Save & Submit Solution'}</span>
+                    </button>
+                  </div>
+                </div>
               </div>
-              <p style={{ fontSize: '0.78rem', color: '#cbd5e1', lineHeight: 1.4, margin: '0 0 0.65rem 0' }}>
-                Alex is examining projects and tech stacks extracted from your verified resume.
-              </p>
 
-              {profile?.skills && profile.skills.length > 0 && (
-                <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
-                  {(Array.isArray(profile.skills) ? profile.skills : profile.skills.split(',')).slice(0, 4).map((sk, skIdx) => (
-                    <span key={skIdx} className="badge badge-secondary" style={{ fontSize: '0.68rem', padding: '0.15rem 0.45rem' }}>
-                      {typeof sk === 'string' ? sk.trim() : sk}
-                    </span>
-                  ))}
+              {/* Right Side: Optional AI Assistant Chat during Coding */}
+              {showAiChatInCoding && (
+                <div style={{
+                  width: '300px',
+                  minWidth: '300px',
+                  maxWidth: '300px',
+                  background: '#0e1422',
+                  borderLeft: '1px solid var(--border-subtle)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  height: '100%',
+                  overflow: 'hidden',
+                  flexShrink: 0,
+                }}>
+                  {/* Coding Chat Header */}
+                  <div style={{
+                    padding: '0.65rem 0.85rem',
+                    background: '#0a0e1a',
+                    borderBottom: '1px solid var(--border-subtle)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    flexShrink: 0,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <div style={{
+                        width: 26,
+                        height: 26,
+                        borderRadius: '50%',
+                        background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        color: '#fff',
+                        flexShrink: 0,
+                      }}>
+                        <Bot size={15} />
+                      </div>
+                      <div>
+                        <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#f9fafb' }}>
+                          Alex Vance
+                        </div>
+                        <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)' }}>
+                          AI Interviewer
+                        </div>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowAiChatInCoding(false)}
+                      className="btn btn-ghost btn-xs"
+                      style={{ padding: '0.2rem 0.4rem', color: 'var(--text-muted)', fontSize: '0.72rem' }}
+                      title="Hide chat to maximize code editor width"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  {/* Coding Chat Messages */}
+                  <div style={{
+                    flex: 1,
+                    overflowY: 'auto',
+                    padding: '0.85rem',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '0.75rem',
+                  }}>
+                    {messages.map((m, idx) => {
+                      const isUser = m.role === 'user';
+                      return (
+                        <div
+                          key={idx}
+                          style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: isUser ? 'flex-end' : 'flex-start',
+                            maxWidth: '92%',
+                            alignSelf: isUser ? 'flex-end' : 'flex-start',
+                          }}
+                        >
+                          <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '0.35rem',
+                            marginBottom: '0.15rem',
+                            fontSize: '0.68rem',
+                            color: 'var(--text-muted)',
+                          }}>
+                            {isUser ? (
+                              <><span>{m.timestamp}</span><span>You</span></>
+                            ) : (
+                              <><span style={{ color: '#a5b4fc', fontWeight: 600 }}>Alex</span><span>{m.timestamp}</span></>
+                            )}
+                          </div>
+                          <div style={{
+                            padding: '0.55rem 0.75rem',
+                            borderRadius: isUser ? '10px 10px 2px 10px' : '10px 10px 10px 2px',
+                            background: isUser ? '#4f46e5' : '#1e293b',
+                            color: '#fff',
+                            fontSize: '0.82rem',
+                            lineHeight: '1.45',
+                          }}>
+                            {m.content}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {isAiTyping && (
+                      <div style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#a5b4fc', fontSize: '0.75rem' }}>
+                        <RotateCw size={12} className="spin" />
+                        <span>Alex is thinking...</span>
+                      </div>
+                    )}
+                    <div ref={messagesEndRef} />
+                  </div>
+
+                  {/* Coding Chat Input */}
+                  <div style={{
+                    padding: '0.65rem 0.85rem',
+                    background: '#0a0e1a',
+                    borderTop: '1px solid var(--border-subtle)',
+                    flexShrink: 0,
+                  }}>
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        if (!userInput.trim() || isAiTyping || inFlightRef.current) return;
+                        handleSendResponse(userInput.trim());
+                      }}
+                      style={{ display: 'flex', gap: '0.4rem' }}
+                    >
+                      <input
+                        type="text"
+                        placeholder="Ask Alex for clarification..."
+                        value={userInput}
+                        onChange={(e) => setUserInput(e.target.value)}
+                        disabled={isAiTyping || inFlightRef.current}
+                        style={{
+                          flex: 1,
+                          background: 'var(--bg-input)',
+                          border: '1px solid var(--border-subtle)',
+                          borderRadius: 'var(--radius-sm)',
+                          padding: '0.35rem 0.6rem',
+                          color: '#f9fafb',
+                          fontSize: '0.8rem',
+                        }}
+                      />
+                      <button
+                        type="submit"
+                        disabled={!userInput.trim() || isAiTyping || inFlightRef.current}
+                        className="btn btn-primary btn-sm"
+                        style={{ padding: '0.35rem 0.6rem' }}
+                      >
+                        <Send size={13} />
+                      </button>
+                    </form>
+                  </div>
                 </div>
               )}
             </div>
+          ) : (
+            /* =======================================================================
+               CONVERSATIONAL STAGE VIEW (Stages 1-4, 6-7)
+               Main Chat Area (Left/Center) + AI Interviewer Avatar Card (Right)
+               ======================================================================= */
+            <div style={{
+              flex: 1,
+              minHeight: 0,
+              display: 'flex',
+              width: '100%',
+              height: '100%',
+              overflow: 'hidden',
+            }}>
+              {/* Chat Column */}
+              <div style={{
+                flex: 1,
+                minWidth: 0,
+                display: 'flex',
+                flexDirection: 'column',
+                height: '100%',
+                overflow: 'hidden',
+              }}>
+                {/* Stage Banner */}
+                <div style={{
+                  background: 'rgba(99, 102, 241, 0.04)',
+                  borderBottom: '1px solid var(--border-subtle)',
+                  padding: '0.65rem 1.25rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  flexShrink: 0,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <Sparkles size={15} color="#818cf8" />
+                    <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#f9fafb' }}>
+                      {STAGES.find((s) => s.key === currentStage)?.label}: {STAGES.find((s) => s.key === currentStage)?.desc}
+                    </span>
+                    {stageFollowUpCount > 0 && (
+                      <span className="badge badge-primary" style={{ fontSize: '0.68rem', padding: '1px 5px' }}>
+                        Follow-up In Progress
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                    Alex is analyzing your depth, reasoning, and communication.
+                  </div>
+                </div>
 
-            {/* Current Topic Indicator */}
-            <div style={{ marginTop: 'auto', background: 'rgba(255, 255, 255, 0.02)', padding: '0.85rem', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border-subtle)' }}>
-              <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '0.2rem', fontWeight: 600 }}>
-                Current Focus
+                {/* Chat Message Scroll List */}
+                <div style={{
+                  flex: 1,
+                  overflowY: 'auto',
+                  padding: '1.25rem 1.5rem',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '1.25rem',
+                }}>
+                  {messages.map((m, idx) => {
+                    const isUser = m.role === 'user';
+                    return (
+                      <div
+                        key={idx}
+                        style={{
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: isUser ? 'flex-end' : 'flex-start',
+                          maxWidth: '85%',
+                          alignSelf: isUser ? 'flex-end' : 'flex-start',
+                        }}
+                      >
+                        <div style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '0.45rem',
+                          marginBottom: '0.25rem',
+                          fontSize: '0.72rem',
+                          color: 'var(--text-muted)',
+                        }}>
+                          {isUser ? (
+                            <>
+                              <span>{m.timestamp}</span>
+                              <span style={{ fontWeight: 600, color: '#cbd5e1' }}>You</span>
+                              <User size={13} />
+                            </>
+                          ) : (
+                            <>
+                              <Bot size={13} color="#818cf8" />
+                              <span style={{ fontWeight: 600, color: '#a5b4fc' }}>Alex Vance</span>
+                              <span>{m.timestamp}</span>
+                            </>
+                          )}
+                        </div>
+
+                        <div style={{
+                          padding: '0.85rem 1.15rem',
+                          borderRadius: isUser ? '14px 14px 2px 14px' : '14px 14px 14px 2px',
+                          background: isUser ? '#4f46e5' : '#1e293b',
+                          color: '#fff',
+                          fontSize: '0.92rem',
+                          lineHeight: '1.55',
+                          boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)',
+                        }}>
+                          {m.content}
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {isAiTyping && (
+                    <div style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '0.45rem', color: '#a5b4fc', fontSize: '0.82rem' }}>
+                      <RotateCw size={13} className="spin" />
+                      <span>Alex is thinking & analyzing...</span>
+                    </div>
+                  )}
+                  <div ref={messagesEndRef} />
+                </div>
+
+                {/* Candidate Input Area */}
+                <div style={{
+                  background: '#0c121e',
+                  borderTop: '1px solid var(--border-subtle)',
+                  padding: '0.85rem 1.25rem',
+                  flexShrink: 0,
+                }}>
+                  {/* Input Mode Selector */}
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.65rem' }}>
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <button
+                        onClick={() => setInputMode('speak')}
+                        className={`btn btn-xs ${inputMode === 'speak' ? 'btn-primary' : 'btn-ghost'}`}
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                      >
+                        <Mic size={13} />
+                        <span>Voice (Speech-to-Text)</span>
+                      </button>
+                      <button
+                        onClick={() => setInputMode('type')}
+                        className={`btn btn-xs ${inputMode === 'type' ? 'btn-primary' : 'btn-ghost'}`}
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+                      >
+                        <Keyboard size={13} />
+                        <span>Keyboard Typing</span>
+                      </button>
+                    </div>
+
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                      {inputMode === 'speak' ? 'Click microphone to speak naturally' : 'Press Enter to submit answer'}
+                    </div>
+                  </div>
+
+                  {/* SPEAK MODE */}
+                  {inputMode === 'speak' && (
+                    <div style={{
+                      background: 'var(--bg-input)',
+                      border: isListening ? '1px solid #ef4444' : '1px solid var(--border-subtle)',
+                      borderRadius: 'var(--radius-md)',
+                      padding: '0.75rem 1rem',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: '0.65rem',
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '1rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+                          <div style={{
+                            width: 10,
+                            height: 10,
+                            borderRadius: '50%',
+                            background: isListening ? '#ef4444' : '#6b7280',
+                            boxShadow: isListening ? '0 0 10px #ef4444' : 'none',
+                            animation: isListening ? 'pulse 1.2s infinite' : 'none',
+                          }} />
+                          <span style={{ fontSize: '0.84rem', color: isListening ? '#f87171' : 'var(--text-secondary)' }}>
+                            {isListening ? 'Listening to your microphone... speak clearly' : (transcript || interimTranscript) ? 'Voice captured. You can send or edit below.' : 'Microphone idle. Click the button to start speaking.'}
+                          </span>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (isListening) {
+                              stopListening();
+                            } else {
+                              resetTranscript();
+                              startListening();
+                            }
+                          }}
+                          style={{
+                            width: 40,
+                            height: 40,
+                            borderRadius: '50%',
+                            background: isListening ? '#ef4444' : '#6366f1',
+                            border: 'none',
+                            color: '#fff',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            cursor: 'pointer',
+                            boxShadow: isListening ? '0 0 16px rgba(239, 68, 68, 0.6)' : '0 0 10px rgba(99, 102, 241, 0.4)',
+                            transition: 'all 0.2s ease',
+                            flexShrink: 0,
+                          }}
+                          title={isListening ? 'Stop Listening' : 'Click to Speak'}
+                          aria-label={isListening ? 'Stop recording voice' : 'Start speaking with microphone'}
+                        >
+                          {isListening ? <MicOff size={20} /> : <Mic size={20} />}
+                        </button>
+                      </div>
+
+                      {/* Error or unsupported browser alert */}
+                      {speechError && (
+                        <div style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          gap: '0.75rem',
+                          padding: '0.55rem 0.75rem',
+                          borderRadius: 'var(--radius-sm)',
+                          background: 'rgba(239, 68, 68, 0.1)',
+                          border: '1px solid rgba(239, 68, 68, 0.3)',
+                          color: '#f87171',
+                          fontSize: '0.8rem',
+                          lineHeight: 1.4,
+                          flexWrap: 'wrap',
+                        }}>
+                          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.5rem', flex: 1, minWidth: 200 }}>
+                            <AlertCircle size={15} style={{ flexShrink: 0, marginTop: '2px' }} />
+                            <span>{speechError}</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setInputMode('type')}
+                            className="btn btn-outline btn-xs"
+                            style={{
+                              borderColor: 'rgba(239, 68, 68, 0.5)',
+                              color: '#fca5a5',
+                              padding: '0.2rem 0.55rem',
+                              fontSize: '0.75rem',
+                              flexShrink: 0,
+                            }}
+                          >
+                            Switch to Typing
+                          </button>
+                        </div>
+                      )}
+
+                      {/* Real-time recognized speech preview (final + interim) */}
+                      {(transcript || interimTranscript) && (
+                        <div style={{
+                          background: 'rgba(0, 0, 0, 0.3)',
+                          border: '1px solid var(--border-subtle)',
+                          borderRadius: 'var(--radius-sm)',
+                          padding: '0.65rem 0.85rem',
+                          fontSize: '0.88rem',
+                          color: '#f8fafc',
+                          lineHeight: 1.5,
+                          wordBreak: 'break-word',
+                        }}>
+                          <span>{transcript}</span>
+                          {interimTranscript && (
+                            <span style={{ color: '#94a3b8', fontStyle: 'italic', marginLeft: transcript ? '0.35rem' : '0' }}>
+                              {interimTranscript}
+                            </span>
+                          )}
+                        </div>
+                      )}
+
+                      {(transcript || interimTranscript) && (
+                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.65rem' }}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              stopListening();
+                              setUserInput(transcript + (interimTranscript ? ' ' + interimTranscript : ''));
+                              setInputMode('type');
+                            }}
+                            className="btn btn-outline btn-sm"
+                            style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.78rem' }}
+                          >
+                            <Edit3 size={13} />
+                            <span>Edit Transcript</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleSendResponse(transcript + (interimTranscript ? ' ' + interimTranscript : ''))}
+                            disabled={isAiTyping || inFlightRef.current || (!transcript.trim() && !interimTranscript.trim())}
+                            className="btn btn-primary btn-sm"
+                            style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', fontSize: '0.78rem' }}
+                          >
+                            <Send size={13} />
+                            <span>Send Answer</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* TYPE MODE */}
+                  {inputMode === 'type' && (
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        if (!userInput.trim() || isAiTyping || inFlightRef.current) return;
+                        handleSendResponse(userInput.trim());
+                      }}
+                      style={{ display: 'flex', gap: '0.65rem' }}
+                    >
+                      <input
+                        type="text"
+                        placeholder="Type your technical response..."
+                        value={userInput}
+                        onChange={(e) => setUserInput(e.target.value)}
+                        disabled={isAiTyping || inFlightRef.current}
+                        style={{
+                          flex: 1,
+                          background: 'var(--bg-input)',
+                          border: '1px solid var(--border-subtle)',
+                          borderRadius: 'var(--radius-sm)',
+                          padding: '0.65rem 0.85rem',
+                          color: '#f9fafb',
+                          fontSize: '0.88rem',
+                        }}
+                      />
+                      <button
+                        type="submit"
+                        disabled={!userInput.trim() || isAiTyping || inFlightRef.current}
+                        className="btn btn-primary btn-sm"
+                        style={{ padding: '0.65rem 1.15rem' }}
+                      >
+                        <Send size={15} />
+                        <span>Send</span>
+                      </button>
+                    </form>
+                  )}
+                </div>
               </div>
-              <div style={{ fontSize: '0.85rem', color: '#38bdf8', fontWeight: 600 }}>
-                {currentStage === 'introduction' ? 'Candidate Introduction'
-                  : currentStage === 'personal' ? 'Experience & Passion'
-                  : currentStage === 'resume_dive' ? (stageFollowUpCount > 0 ? 'Project Architecture (Deep Dive)' : 'Project Architecture')
-                  : currentStage === 'technical' ? (stageFollowUpCount > 0 ? 'Core Concepts (Probing Trade-offs)' : 'Core Concepts & Trade-offs')
-                  : currentStage === 'coding' ? 'Live Coding Solution'
-                  : currentStage === 'followup' ? (stageFollowUpCount > 0 ? 'Complexity & Optimization Follow-up' : 'Time & Space Complexity')
-                  : 'Session Wrap-up'}
-              </div>
+
+              {/* Right Side: AI Interviewer Card & Resume Context */}
+              <aside style={{
+                width: '280px',
+                minWidth: '280px',
+                maxWidth: '280px',
+                background: '#0c121e',
+                borderLeft: '1px solid var(--border-subtle)',
+                padding: '1.25rem',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: '1.25rem',
+                overflowY: 'auto',
+                flexShrink: 0,
+              }}>
+                {/* AI Interviewer Avatar Card */}
+                <div style={{
+                  background: '#0f172a',
+                  border: '1px solid var(--border-subtle)',
+                  borderRadius: 'var(--radius-md)',
+                  padding: '1.25rem',
+                  textAlign: 'center',
+                }}>
+                  <div style={{
+                    width: 56,
+                    height: 56,
+                    borderRadius: '50%',
+                    background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    margin: '0 auto 0.75rem auto',
+                    boxShadow: '0 0 15px rgba(99, 102, 241, 0.4)',
+                  }}>
+                    <Bot size={28} color="#fff" />
+                  </div>
+                  <div style={{ fontWeight: 800, fontSize: '0.95rem', color: '#f8fafc', marginBottom: '0.2rem' }}>
+                    Alex Vance
+                  </div>
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginBottom: '0.75rem' }}>
+                    Principal Interviewer • Gemini AI
+                  </div>
+                  <div style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '0.35rem',
+                    padding: '0.2rem 0.5rem',
+                    borderRadius: '10px',
+                    background: 'rgba(16, 185, 129, 0.12)',
+                    color: '#34d399',
+                    fontSize: '0.7rem',
+                    fontWeight: 700,
+                  }}>
+                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#10b981', animation: 'pulse 1.5s infinite' }} />
+                    <span>Live Audio Active</span>
+                  </div>
+                </div>
+
+                {/* Candidate Resume Context Pill */}
+                <div style={{
+                  background: 'rgba(16, 185, 129, 0.05)',
+                  border: '1px solid rgba(16, 185, 129, 0.2)',
+                  borderRadius: 'var(--radius-md)',
+                  padding: '1rem',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', marginBottom: '0.4rem', color: '#10b981' }}>
+                    <CheckCircle2 size={15} />
+                    <span style={{ fontWeight: 700, fontSize: '0.82rem' }}>Resume Context Loaded</span>
+                  </div>
+                  <p style={{ fontSize: '0.75rem', color: '#cbd5e1', lineHeight: 1.4, margin: '0 0 0.5rem 0' }}>
+                    Questions are tailored to your real engineering experience and tech stack.
+                  </p>
+                  {profile?.skills && profile.skills.length > 0 && (
+                    <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
+                      {(Array.isArray(profile.skills) ? profile.skills : profile.skills.split(',')).slice(0, 4).map((sk, skIdx) => (
+                        <span key={skIdx} className="badge badge-secondary" style={{ fontSize: '0.65rem', padding: '0.12rem 0.4rem' }}>
+                          {typeof sk === 'string' ? sk.trim() : sk}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Current Focus Card */}
+                <div style={{
+                  background: 'rgba(255, 255, 255, 0.02)',
+                  padding: '0.85rem',
+                  borderRadius: 'var(--radius-sm)',
+                  border: '1px solid var(--border-subtle)',
+                  marginTop: 'auto',
+                }}>
+                  <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '0.2rem', fontWeight: 600 }}>
+                    Current Focus
+                  </div>
+                  <div style={{ fontSize: '0.82rem', color: '#38bdf8', fontWeight: 600 }}>
+                    {currentStage === 'introduction' ? 'Candidate Introduction'
+                      : currentStage === 'personal' ? 'Experience & Passion'
+                      : currentStage === 'resume_dive' ? (stageFollowUpCount > 0 ? 'Project Deep Dive' : 'Project Architecture')
+                      : currentStage === 'technical' ? (stageFollowUpCount > 0 ? 'Core Concepts Probing' : 'Core Concepts & Trade-offs')
+                      : currentStage === 'coding' ? 'Live Coding Solution'
+                      : currentStage === 'followup' ? 'Complexity & Optimization'
+                      : 'Session Wrap-up'}
+                  </div>
+                </div>
+              </aside>
             </div>
-          </div>
-        )}
+          )}
+        </main>
       </div>
+
 
       {/* FINISHING INTERVIEW MULTI-STEP PROGRESS MODAL */}
       {completing && (
