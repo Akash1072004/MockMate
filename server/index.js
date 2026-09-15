@@ -61,6 +61,7 @@ const allowedOrigins = [
   'http://127.0.0.1:3000',
   'http://localhost:5000',
   'http://127.0.0.1:5000',
+  'https://mock-mate-ashy.vercel.app',
 ];
 
 if (FRONTEND_URL) {
@@ -82,7 +83,9 @@ const corsOptions = {
     // In local development or if FRONTEND_URL is not set, allow localhost & local loopbacks
     const isLocalDevelopment = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
 
-    if (isExplicitlyAllowed || isLocalDevelopment || (!FRONTEND_URL && process.env.NODE_ENV !== 'production')) {
+    const isVercelOrigin = /^https:\/\/[a-zA-Z0-9-_]+\.vercel\.app$/.test(normalizedOrigin);
+
+    if (isExplicitlyAllowed || isLocalDevelopment || isVercelOrigin || (!FRONTEND_URL && process.env.NODE_ENV !== 'production')) {
       return callback(null, true);
     }
 

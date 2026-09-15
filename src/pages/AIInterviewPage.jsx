@@ -240,19 +240,83 @@ export default function AIInterviewPage() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isAiTyping]);
 
-  // Text-to-speech helper
+  const voiceEnabledRef = useRef(voiceEnabled);
+  voiceEnabledRef.current = voiceEnabled;
+  const activeUtteranceRef = useRef(null);
+
+  // Text-to-speech helper with Chrome V8 GC protection & Markdown cleanup
   const speakText = useCallback((text) => {
-    if (!voiceEnabled || !window.speechSynthesis) return;
+    if (!voiceEnabledRef.current || typeof window === 'undefined' || !window.speechSynthesis || !text) return;
     try {
+      // 1. Strip markdown syntax so speech sounds natural
+      const cleanText = text
+        .replace(/\*\*(.*?)\*\*/g, '$1')
+        .replace(/\*(.*?)\*/g, '$1')
+        .replace(/`{1,3}[^`]*`{1,3}/g, '')
+        .replace(/#+\s+/g, '')
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+        .replace(/[\\/*_~`]/g, '')
+        .trim();
+
+      if (!cleanText) return;
+
+      // 2. Clear any ongoing speech
       window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 1.05;
+
+      // 3. Resume synthesis in case browser paused it
+      if (window.speechSynthesis.paused) {
+        window.speechSynthesis.resume();
+      }
+
+      const utterance = new SpeechSynthesisUtterance(cleanText);
+      utterance.rate = 1.02;
       utterance.pitch = 1.0;
-      window.speechSynthesis.speak(utterance);
+      utterance.lang = 'en-US';
+
+      // 4. Select best available English voice
+      const voices = window.speechSynthesis.getVoices();
+      if (voices && voices.length > 0) {
+        const preferredVoice = voices.find(
+          (v) => (v.lang.startsWith('en') && (v.name.includes('Natural') || v.name.includes('Google') || v.name.includes('Samantha') || v.name.includes('Daniel') || v.name.includes('English')))
+        ) || voices.find((v) => v.lang.startsWith('en'));
+        if (preferredVoice) {
+          utterance.voice = preferredVoice;
+        }
+      }
+
+      // 5. Retain reference on window & ref to prevent V8 garbage collector from aborting speech
+      activeUtteranceRef.current = utterance;
+      window._activeSpeechUtterance = utterance;
+
+      utterance.onend = () => {
+        activeUtteranceRef.current = null;
+        window._activeSpeechUtterance = null;
+      };
+
+      utterance.onerror = (e) => {
+        if (e.error !== 'interrupted' && e.error !== 'canceled') {
+          console.warn('[AIInterviewPage] Speech synthesis utterance error:', e.error);
+        }
+        activeUtteranceRef.current = null;
+        window._activeSpeechUtterance = null;
+      };
+
+      // 6. Speak with small timeout to allow browser audio engine to settle
+      setTimeout(() => {
+        try {
+          if (window.speechSynthesis.paused) {
+            window.speechSynthesis.resume();
+          }
+          window.speechSynthesis.speak(utterance);
+        } catch (err) {
+          console.warn('[AIInterviewPage] Speech speak failed:', err);
+        }
+      }, 60);
+
     } catch (e) {
       console.warn('[AIInterviewPage] Speech synthesis warning:', e);
     }
-  }, [voiceEnabled]);
+  }, []);
 
   // Helper to obtain starter code for a specific language and problem
   const getStarterCode = useCallback((lang, problem) => {
@@ -2343,6 +2407,9 @@ export default function AIInterviewPage() {
                             if (isListening) {
                               stopListening();
                             } else {
+                              if (window.speechSynthesis) {
+                                try { window.speechSynthesis.cancel(); } catch (_) {}
+                              }
                               resetTranscript();
                               startListening();
                             }
