@@ -32,8 +32,13 @@ export default function CollaborativeCodeEditor({
   readOnly = false,
   interviewId = null,
   questionId = null,
+  problemMetadata = null,
   testCases = [],
   onRunSuccess = null,
+  isExpanded = false,
+  onToggleExpand = null,
+  onSubmit = null,
+  isSubmitting = false,
 }) {
   const editorRef = useRef(null);
   const monacoInstanceRef = useRef(null);
@@ -111,6 +116,16 @@ export default function CollaborativeCodeEditor({
       window.removeEventListener('mouseup', handleMouseUp);
     };
   }, [isResizingConsole]);
+
+  // Trigger Monaco layout whenever isExpanded changes
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (editorRef.current && typeof editorRef.current.layout === 'function') {
+        editorRef.current.layout();
+      }
+    }, 60);
+    return () => clearTimeout(timer);
+  }, [isExpanded]);
 
   // Window resize handler to trigger Monaco layout
   useEffect(() => {
@@ -219,12 +234,13 @@ export default function CollaborativeCodeEditor({
         customInput: customInput ? customInput : null,
         interviewId,
         questionId,
+        problemMetadata,
       });
 
       setExecResult(res);
 
-      // Automatic tab selection on compilation/runtime errors vs test cases
-      if (res.verdict === 'CE' || res.verdict === 'RE' || res.error) {
+      // Automatic tab selection: CE and RE go to errors; WA and AC go to tests
+      if (res.verdict === 'CE' || res.verdict === 'RE' || (res.error && res.verdict !== 'WA')) {
         setActiveConsoleTab('errors');
         setConsoleHeight((prev) => Math.max(prev, 220));
       } else if (res.testResults && res.testResults.length > 0) {
@@ -323,7 +339,7 @@ export default function CollaborativeCodeEditor({
     }
   }, [selectableLanguages, language, onLanguageChange]);
 
-  const hasError = Boolean(execResult?.error || execResult?.verdict === 'CE' || execResult?.verdict === 'RE');
+  const hasError = Boolean((execResult?.error && execResult?.verdict !== 'WA') || execResult?.verdict === 'CE' || execResult?.verdict === 'RE');
 
   return (
     <div style={{
@@ -346,8 +362,31 @@ export default function CollaborativeCodeEditor({
         gap: '0.5rem',
         flex: '0 0 auto',
       }}>
-        {/* Left: Language Selection & Template Reset */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem' }}>
+        {/* Left: Language Selection & Template Reset & Fullscreen Toggle */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.65rem', flexWrap: 'wrap' }}>
+          {onToggleExpand && (
+            <button
+              type="button"
+              onClick={onToggleExpand}
+              className="btn btn-outline btn-sm"
+              style={{
+                padding: '0.3rem 0.75rem',
+                fontSize: '0.78rem',
+                borderColor: isExpanded ? '#6366f1' : 'var(--border-subtle)',
+                background: isExpanded ? 'rgba(99, 102, 241, 0.25)' : 'rgba(255, 255, 255, 0.05)',
+                color: isExpanded ? '#a5b4fc' : '#e2e8f0',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                fontWeight: 600,
+                borderRadius: 'var(--radius-sm)',
+              }}
+              title={isExpanded ? 'Exit fullscreen coding workspace' : 'Expand coding workspace to fullscreen'}
+            >
+              {isExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+              <span>{isExpanded ? '← Exit Fullscreen' : '⛶ Expand Editor'}</span>
+            </button>
+          )}
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#818cf8', fontSize: '0.85rem', fontWeight: 600 }}>
             <Code2 size={16} />
             <span>Language:</span>
@@ -494,6 +533,31 @@ export default function CollaborativeCodeEditor({
               </>
             )}
           </button>
+
+          {onSubmit && (
+            <button
+              type="button"
+              onClick={onSubmit}
+              disabled={isSubmitting || isRunning || !code?.trim()}
+              className="btn btn-success btn-sm"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                padding: '0.35rem 0.95rem',
+                fontSize: '0.8rem',
+                fontWeight: 600,
+                background: '#059669',
+                borderColor: '#059669',
+                color: '#ffffff',
+                borderRadius: 'var(--radius-sm)',
+              }}
+              title="Submit code for review"
+            >
+              <CheckCircle2 size={14} />
+              <span>{isSubmitting ? 'Submitting...' : 'Submit Code'}</span>
+            </button>
+          )}
         </div>
       </div>
 

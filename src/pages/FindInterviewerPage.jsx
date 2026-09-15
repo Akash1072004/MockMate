@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { getAvailableInterviewers, createInterviewRequest } from '../services/discoveryService';
@@ -20,8 +20,53 @@ import {
   User,
   Sparkles,
   FileText,
-  Play
+  Play,
+  Calendar,
+  X,
+  XCircle
 } from 'lucide-react';
+
+
+/**
+ * Format live countdown down to the second.
+ * Never returns negative values.
+ */
+function formatLiveCountdown(targetMs, nowMs) {
+  const diff = targetMs - nowMs;
+  if (diff <= 0) return '00:00:00';
+  const totalSecs = Math.floor(diff / 1000);
+  const hours = Math.floor(totalSecs / 3600);
+  const minutes = Math.floor((totalSecs % 3600) / 60);
+  const seconds = totalSecs % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+
+  if (hours >= 24) {
+    const days = Math.floor(hours / 24);
+    const remHours = hours % 24;
+    return `${days}d ${pad(remHours)}:${pad(minutes)}:${pad(seconds)}`;
+  }
+  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
+}
+
+/**
+ * Format scheduled timestamp into friendly date/time representation.
+ */
+function formatScheduledDate(isoStr) {
+  if (!isoStr) return '';
+  const d = new Date(isoStr);
+  if (isNaN(d.getTime())) return '';
+  const now = new Date();
+  const isToday = d.toDateString() === now.toDateString();
+  const tmrw = new Date();
+  tmrw.setDate(tmrw.getDate() + 1);
+  const isTomorrow = d.toDateString() === tmrw.toDateString();
+
+  const timeStr = d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', hour12: true });
+
+  if (isToday) return `Today, ${timeStr}`;
+  if (isTomorrow) return `Tomorrow, ${timeStr}`;
+  return `${d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}, ${timeStr}`;
+}
 
 export default function FindInterviewerPage() {
   const { user, profile } = useAuth();
@@ -38,6 +83,30 @@ export default function FindInterviewerPage() {
   const [candidateRequests, setCandidateRequests] = useState([]);
   const [candidateInterviews, setCandidateInterviews] = useState([]);
   const [activeLiveSessions, setActiveLiveSessions] = useState([]);
+  const [toasts, setToasts] = useState([]);
+  const [now, setNow] = useState(Date.now());
+  const prevCandidateStateRef = useRef({ initialized: false, requests: [], interviews: [] });
+  const notifiedReadySetRef = useRef(new Set());
+
+  // Active 1-second interval timer for live client-side countdowns
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const addToast = (toast) => {
+    const id = 'toast_' + Date.now() + '_' + Math.random().toString(36).substring(2, 6);
+    setToasts((prev) => [...prev, { ...toast, id }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 7000);
+  };
+
+  const removeToast = (id) => {
+    setToasts((prev) => prev.filter((t) => t.id !== id));
+  };
 
   // Live Supabase Presence subscription
   const livePresenceMap = useLiveInterviewerPresence();
@@ -54,16 +123,66 @@ export default function FindInterviewerPage() {
     try {
       const { data: reqs } = await supabase
         .from('interview_requests')
-        .select('id, interviewer_id, status, created_at')
-        .eq('candidate_id', user.id);
-      setCandidateRequests(reqs || []);
+        .select('id, candidate_id, interviewer_id, status, interview_id, join_code, created_at, responded_at')
+        .eq('candidate_id', user.id)
+        .order('created_at', { ascending: false });
 
       const { data: ints } = await supabase
         .from('interviews')
-        .select('id, interviewer_id, status, start_time')
+        .select('id, candidate_id, interviewer_id, interviewer_name, status, start_time, duration, join_code, created_at, updated_at')
         .eq('candidate_id', user.id)
-        .in('status', ['waiting', 'scheduled', 'active']);
-      setCandidateInterviews(ints || []);
+        .in('status', ['waiting', 'scheduled', 'active'])
+        .order('created_at', { ascending: false });
+
+      const currentReqs = reqs || [];
+      const currentInts = ints || [];
+
+      // Detect realtime status transitions and dispatch in-app notifications
+      const prevState = prevCandidateStateRef.current;
+      if (prevState.initialized) {
+        currentReqs.forEach((newReq) => {
+          const oldReq = prevState.requests.find((r) => r.id === newReq.id);
+          const interviewerObj = interviewers.find((i) => i.id === newReq.interviewer_id);
+          const intName = interviewerObj?.full_name || 'Interviewer';
+
+          if (oldReq && oldReq.status === 'pending' && newReq.status === 'accepted') {
+            addToast({
+              type: 'success',
+              title: 'Interview Accepted',
+              message: `✓ ${intName} accepted your interview request. Waiting for the interviewer to schedule the interview.`,
+            });
+          } else if (oldReq && oldReq.status === 'pending' && newReq.status === 'declined') {
+            addToast({
+              type: 'warning',
+              title: 'Request Declined',
+              message: `✕ ${intName} was unable to accept your interview request.`,
+            });
+          }
+        });
+
+        currentInts.forEach((newInt) => {
+          const oldInt = prevState.interviews.find((i) => i.id === newInt.id);
+          const intName = newInt.interviewer_name || 'Interviewer';
+
+          if (newInt.start_time && (!oldInt || !oldInt.start_time || oldInt.start_time !== newInt.start_time)) {
+            const dateFormatted = formatScheduledDate(newInt.start_time);
+            addToast({
+              type: 'info',
+              title: 'Interview Scheduled',
+              message: `📅 ${intName} scheduled your interview for ${dateFormatted}.`,
+            });
+          }
+        });
+      }
+
+      prevCandidateStateRef.current = {
+        initialized: true,
+        requests: currentReqs,
+        interviews: currentInts,
+      };
+
+      setCandidateRequests(currentReqs);
+      setCandidateInterviews(currentInts);
     } catch (err) {
       console.warn('[FindInterviewerPage] Error loading candidate state:', err);
     }
@@ -203,8 +322,71 @@ export default function FindInterviewerPage() {
     }
   };
 
+  // When scheduled time arrives, dispatch notification if not already notified
+  useEffect(() => {
+    candidateInterviews.forEach((intItem) => {
+      if (intItem.status === 'waiting' && intItem.start_time) {
+        const startTimeMs = new Date(intItem.start_time).getTime();
+        if (startTimeMs <= now && !notifiedReadySetRef.current.has(intItem.id)) {
+          notifiedReadySetRef.current.add(intItem.id);
+          addToast({
+            type: 'success',
+            title: 'Interview Ready',
+            message: `🟢 Your interview with ${intItem.interviewer_name || 'your interviewer'} is starting now.`,
+          });
+        }
+      }
+    });
+  }, [now, candidateInterviews]);
+
   return (
     <div className="container" style={{ padding: '3rem 1.5rem', maxWidth: '1080px' }}>
+      {/* Realtime Floating Toast Notifications */}
+      {toasts.length > 0 && (
+        <div style={{
+          position: 'fixed',
+          top: '1.5rem',
+          right: '1.5rem',
+          zIndex: 99999,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.75rem',
+          maxWidth: '420px',
+          width: 'calc(100% - 3rem)',
+        }}>
+          {toasts.map((t) => (
+            <div
+              key={t.id}
+              className="card"
+              style={{
+                background: '#0d1322',
+                border: t.type === 'success' ? '1px solid #10b981' : t.type === 'info' ? '1px solid #6366f1' : '1px solid #f59e0b',
+                boxShadow: '0 10px 30px rgba(0, 0, 0, 0.6)',
+                padding: '0.85rem 1.15rem',
+                borderRadius: 'var(--radius-md)',
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: '0.75rem',
+              }}
+            >
+              <div style={{ marginTop: '0.15rem', color: t.type === 'success' ? '#34d399' : t.type === 'info' ? '#818cf8' : '#fbbf24' }}>
+                {t.type === 'success' ? <CheckCircle2 size={18} /> : t.type === 'info' ? <Calendar size={18} /> : <AlertCircle size={18} />}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                {t.title && <div style={{ fontSize: '0.85rem', fontWeight: 700, color: '#f9fafb', marginBottom: '0.15rem' }}>{t.title}</div>}
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', lineHeight: 1.45 }}>{t.message}</div>
+              </div>
+              <button
+                onClick={() => removeToast(t.id)}
+                style={{ background: 'none', border: 'none', color: '#94a3b8', cursor: 'pointer', padding: '0.1rem' }}
+                title="Dismiss"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem', flexWrap: 'wrap', gap: '1rem' }}>
         <div>
@@ -402,39 +584,297 @@ export default function FindInterviewerPage() {
 
                   <div style={{ marginTop: 'auto', paddingTop: '0.5rem' }}>
                     {(() => {
-                      const pendingReq = candidateRequests.find(
-                        (r) => r.interviewer_id === interviewer.id && r.status === 'pending'
+                      const requestsForThisInterviewer = candidateRequests.filter(
+                        (r) => r.interviewer_id === interviewer.id
                       );
+                      const latestReq = requestsForThisInterviewer.sort(
+                        (a, b) => new Date(b.created_at) - new Date(a.created_at)
+                      )[0];
+
                       const existingInterview = candidateInterviews.find(
                         (i) => i.interviewer_id === interviewer.id && ['scheduled', 'waiting', 'active'].includes(i.status)
                       );
 
-                      if (existingInterview) {
+                      // 1. Genuine Active Interview in Progress
+                      if (existingInterview && existingInterview.status === 'active') {
                         return (
-                          <Link
-                            to={`/interview/${existingInterview.id}`}
-                            className={`btn ${existingInterview.status === 'active' ? 'btn-primary' : 'btn-secondary'} btn-sm`}
-                            style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }}
-                          >
-                            <Play size={14} />
-                            <span>{existingInterview.status === 'active' ? 'Enter My Interview' : 'Scheduled · Enter Room'}</span>
-                          </Link>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', width: '100%' }}>
+                            <div style={{ fontSize: '0.75rem', color: '#10b981', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                              <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981', boxShadow: '0 0 8px #10b981' }} />
+                              <span>Interview In Progress</span>
+                            </div>
+                            <Link
+                              to={`/interview/${existingInterview.id}`}
+                              className="btn btn-primary btn-sm"
+                              style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }}
+                            >
+                              <Play size={14} />
+                              <span>Enter My Interview</span>
+                            </Link>
+                          </div>
                         );
                       }
 
-                      if (pendingReq) {
+                      // 2. Waiting Interview (Accepted by Interviewer)
+                      if (existingInterview && existingInterview.status === 'waiting') {
+                        const startTimeMs = existingInterview.start_time ? new Date(existingInterview.start_time).getTime() : null;
+                        const isScheduledTime = startTimeMs !== null && !isNaN(startTimeMs);
+                        const isReady = isScheduledTime && startTimeMs <= now;
+
+                        // A. Scheduled time has arrived (Countdown reached 00:00:00)
+                        if (isReady) {
+                          return (
+                            <div style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '0.5rem',
+                              width: '100%',
+                              background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(99, 102, 241, 0.1) 100%)',
+                              border: '1px solid rgba(16, 185, 129, 0.5)',
+                              boxShadow: '0 0 16px rgba(16, 185, 129, 0.2)',
+                              borderRadius: 'var(--radius-md)',
+                              padding: '0.75rem',
+                            }}>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <div style={{ fontSize: '0.82rem', color: '#34d399', fontWeight: 800, display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981', boxShadow: '0 0 8px #10b981' }} />
+                                  <span>🟢 Interview Ready</span>
+                                </div>
+                                <span className="badge badge-success" style={{ fontSize: '0.65rem' }}>Starting Now</span>
+                              </div>
+                              <div style={{ fontSize: '0.75rem', color: '#e2e8f0', lineHeight: 1.4 }}>
+                                Your interview with <strong>{interviewer.full_name}</strong> is ready.
+                              </div>
+                              <Link
+                                to={`/interview/${existingInterview.id}`}
+                                className="btn btn-primary btn-sm"
+                                style={{
+                                  width: '100%',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  gap: '0.4rem',
+                                  fontWeight: 700,
+                                  boxShadow: '0 0 12px rgba(99, 102, 241, 0.4)',
+                                }}
+                              >
+                                <Play size={14} />
+                                <span>Join Interview</span>
+                              </Link>
+                            </div>
+                          );
+                        }
+
+                        // B. Scheduled in future with live countdown
+                        if (isScheduledTime) {
+                          const remainingCountdown = formatLiveCountdown(startTimeMs, now);
+                          const formattedDateStr = formatScheduledDate(existingInterview.start_time);
+
+                          return (
+                            <div style={{
+                              display: 'flex',
+                              flexDirection: 'column',
+                              gap: '0.5rem',
+                              width: '100%',
+                              background: 'linear-gradient(135deg, rgba(168, 85, 247, 0.12) 0%, rgba(99, 102, 241, 0.08) 100%)',
+                              border: '1px solid rgba(168, 85, 247, 0.45)',
+                              borderRadius: 'var(--radius-md)',
+                              padding: '0.75rem',
+                            }}>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.25rem' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#d8b4fe', fontSize: '0.8rem', fontWeight: 800 }}>
+                                  <Calendar size={14} />
+                                  <span>📅 Interview Scheduled</span>
+                                </div>
+                                <span className="badge" style={{ background: 'rgba(168, 85, 247, 0.2)', color: '#d8b4fe', border: '1px solid rgba(168, 85, 247, 0.3)', fontSize: '0.65rem' }}>
+                                  Scheduled
+                                </span>
+                              </div>
+
+                              <div style={{ fontSize: '0.76rem', color: 'var(--text-secondary)' }}>
+                                Interview with <strong style={{ color: '#f9fafb' }}>{interviewer.full_name}</strong>
+                                <div style={{ color: '#c084fc', fontWeight: 600, marginTop: '0.15rem' }}>
+                                  {formattedDateStr}
+                                </div>
+                              </div>
+
+                              {/* Live Countdown Display */}
+                              <div style={{
+                                background: 'rgba(0,0,0,0.35)',
+                                border: '1px solid rgba(168, 85, 247, 0.3)',
+                                borderRadius: 'var(--radius-sm)',
+                                padding: '0.4rem 0.65rem',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'space-between',
+                              }}>
+                                <span style={{ fontSize: '0.7rem', color: '#a855f7', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                  Starts in
+                                </span>
+                                <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.85rem', fontWeight: 800, color: '#e9d5ff' }}>
+                                  {remainingCountdown}
+                                </span>
+                              </div>
+
+                              {/* Join Disabled Until Start Time */}
+                              <button
+                                disabled
+                                className="btn btn-secondary btn-sm"
+                                style={{
+                                  width: '100%',
+                                  opacity: 0.75,
+                                  cursor: 'not-allowed',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  gap: '0.4rem',
+                                  fontSize: '0.78rem',
+                                }}
+                                title="Join will become available when the interview starts."
+                              >
+                                <Clock size={13} />
+                                <span>Join will become available at start</span>
+                              </button>
+                            </div>
+                          );
+                        }
+
+                        // C. Accepted but not yet scheduled by interviewer
                         return (
-                          <button
-                            disabled
-                            className="btn btn-secondary btn-sm"
-                            style={{ width: '100%', opacity: 0.85, cursor: 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', border: '1px solid rgba(245, 158, 11, 0.4)', color: '#fbbf24' }}
-                          >
-                            <Clock size={14} color="#f59e0b" />
-                            <span>Request Pending</span>
-                          </button>
+                          <div style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '0.45rem',
+                            width: '100%',
+                            background: 'rgba(16, 185, 129, 0.08)',
+                            border: '1px solid rgba(16, 185, 129, 0.35)',
+                            borderRadius: 'var(--radius-md)',
+                            padding: '0.75rem',
+                          }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#34d399', fontSize: '0.8rem', fontWeight: 800 }}>
+                                <CheckCircle2 size={14} />
+                                <span>✓ Interview Accepted</span>
+                              </div>
+                              <span className="badge badge-success" style={{ fontSize: '0.65rem' }}>Accepted</span>
+                            </div>
+                            <div style={{ fontSize: '0.73rem', color: '#94a3b8', lineHeight: 1.45 }}>
+                              Interview request accepted by <strong style={{ color: '#f9fafb' }}>{interviewer.full_name}</strong>. Waiting for the interviewer to schedule the interview.
+                            </div>
+                            <button
+                              disabled
+                              className="btn btn-secondary btn-sm"
+                              style={{ width: '100%', opacity: 0.8, cursor: 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', fontSize: '0.78rem' }}
+                            >
+                              <Clock size={13} color="#34d399" />
+                              <span>Awaiting Interviewer Schedule...</span>
+                            </button>
+                          </div>
                         );
                       }
 
+                      // 3. Request is Pending (Awaiting Interviewer Acceptance)
+                      if (latestReq && latestReq.status === 'pending') {
+                        return (
+                          <div style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '0.45rem',
+                            width: '100%',
+                            background: 'rgba(245, 158, 11, 0.06)',
+                            border: '1px solid rgba(245, 158, 11, 0.3)',
+                            borderRadius: 'var(--radius-md)',
+                            padding: '0.75rem',
+                          }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#fbbf24', fontSize: '0.8rem', fontWeight: 800 }}>
+                                <Clock size={14} />
+                                <span>🕐 Request Pending</span>
+                              </div>
+                              <span className="badge badge-warning" style={{ fontSize: '0.65rem' }}>Pending</span>
+                            </div>
+                            <div style={{ fontSize: '0.73rem', color: '#94a3b8', lineHeight: 1.45 }}>
+                              Interview request sent to <strong style={{ color: '#f9fafb' }}>{interviewer.full_name}</strong>. Waiting for their response.
+                            </div>
+                            <button
+                              disabled
+                              className="btn btn-secondary btn-sm"
+                              style={{ width: '100%', opacity: 0.85, cursor: 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', border: '1px solid rgba(245, 158, 11, 0.4)', color: '#fbbf24', fontSize: '0.78rem' }}
+                            >
+                              <Clock size={13} color="#f59e0b" />
+                              <span>Request Pending</span>
+                            </button>
+                          </div>
+                        );
+                      }
+
+                      // 4. Request was Rejected / Declined
+                      if (latestReq && latestReq.status === 'declined') {
+                        return (
+                          <div style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '0.45rem',
+                            width: '100%',
+                            background: 'rgba(239, 68, 68, 0.06)',
+                            border: '1px solid rgba(239, 68, 68, 0.3)',
+                            borderRadius: 'var(--radius-md)',
+                            padding: '0.75rem',
+                          }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', color: '#f87171', fontSize: '0.8rem', fontWeight: 800 }}>
+                                <XCircle size={14} />
+                                <span>✕ Request Rejected</span>
+                              </div>
+                              <span className="badge badge-danger" style={{ fontSize: '0.65rem' }}>Declined</span>
+                            </div>
+                            <div style={{ fontSize: '0.73rem', color: '#94a3b8', lineHeight: 1.45 }}>
+                              Interviewer was unable to accept your previous request. You can request again.
+                            </div>
+                            <button
+                              onClick={() => handleOpenRequestModal(interviewer)}
+                              disabled={sendingRequest}
+                              className="btn btn-outline btn-sm"
+                              style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', color: '#f87171', borderColor: 'rgba(239, 68, 68, 0.4)' }}
+                            >
+                              <RotateCw size={13} />
+                              <span>Request Again</span>
+                            </button>
+                          </div>
+                        );
+                      }
+
+                      // 5. Request was Cancelled
+                      if (latestReq && latestReq.status === 'cancelled') {
+                        return (
+                          <div style={{
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '0.45rem',
+                            width: '100%',
+                            background: 'rgba(255, 255, 255, 0.03)',
+                            border: '1px solid var(--border-subtle)',
+                            borderRadius: 'var(--radius-md)',
+                            padding: '0.75rem',
+                          }}>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                              <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 600 }}>Request Cancelled</span>
+                              <span className="badge badge-neutral" style={{ fontSize: '0.65rem' }}>Cancelled</span>
+                            </div>
+                            <button
+                              onClick={() => handleOpenRequestModal(interviewer)}
+                              disabled={sendingRequest}
+                              className="btn btn-outline btn-sm"
+                              style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }}
+                            >
+                              <RotateCw size={13} />
+                              <span>Request Again</span>
+                            </button>
+                          </div>
+                        );
+                      }
+
+                      // 6. No Prior Request -> Standard Availability Check
                       if (!candidateHasResume) {
                         return (
                           <Link
@@ -463,20 +903,6 @@ export default function FindInterviewerPage() {
                       }
 
                       if (status.state === 'busy') {
-                        const isMySession = status.activeSession?.candidateId === user?.id;
-                        if (isMySession) {
-                          return (
-                            <Link
-                              to={`/interview/${status.activeSession.id}`}
-                              className="btn btn-primary btn-sm"
-                              style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }}
-                            >
-                              <Play size={14} />
-                              <span>Enter My Interview</span>
-                            </Link>
-                          );
-                        }
-
                         return (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', width: '100%' }}>
                             {status.activeSession && status.activeSession.candidateName && (

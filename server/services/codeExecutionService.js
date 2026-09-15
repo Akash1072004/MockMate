@@ -35,44 +35,25 @@ function runProcess({ command, args, cwd, input = '', timeoutMs = 5000, maxBuffe
     const timer = setTimeout(() => {
       timedOut = true;
       if (!finished) {
-        if (process.platform === 'win32') {
-          try {
-            spawn('taskkill', ['/pid', String(child.pid), '/T', '/F']);
-          } catch (e) {
-            child.kill('SIGKILL');
-          }
+        if (process.platform === 'win32' && child.pid) {
+          spawn('taskkill', ['/pid', String(child.pid), '/f', '/t']).on('error', () => {});
         } else {
           child.kill('SIGKILL');
         }
       }
     }, timeoutMs);
 
-    if (child.stdout) {
-      child.stdout.on('data', (chunk) => {
-        if (stdout.length < maxBuffer) {
-          stdout += chunk.toString();
-        }
-      });
-    }
-
-    if (child.stderr) {
-      child.stderr.on('data', (chunk) => {
-        if (stderr.length < maxBuffer) {
-          stderr += chunk.toString();
-        }
-      });
-    }
-
-    if (child.stdin) {
-      try {
-        if (input) {
-          child.stdin.write(input);
-        }
-        child.stdin.end();
-      } catch (e) {
-        // Stdin already closed
+    child.stdout.on('data', (data) => {
+      if (stdout.length < maxBuffer) {
+        stdout += data.toString();
       }
-    }
+    });
+
+    child.stderr.on('data', (data) => {
+      if (stderr.length < maxBuffer) {
+        stderr += data.toString();
+      }
+    });
 
     child.on('error', (err) => {
       if (finished) return;
@@ -82,42 +63,104 @@ function runProcess({ command, args, cwd, input = '', timeoutMs = 5000, maxBuffe
         exitCode: 1,
         stdout,
         stderr: stderr || err.message,
-        timedOut,
+        timedOut: false,
         durationMs: Date.now() - startTime,
       });
     });
 
-    child.on('close', (exitCode) => {
+    child.on('close', (code) => {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
       resolve({
-        exitCode: timedOut ? null : (exitCode ?? 0),
+        exitCode: code,
         stdout,
         stderr,
         timedOut,
         durationMs: Date.now() - startTime,
       });
     });
+
+    // Feed stdin if provided
+    try {
+      if (input != null && input !== '') {
+        child.stdin.write(input);
+      }
+      child.stdin.end();
+    } catch (e) {
+      // Child process might have exited early
+    }
   });
 }
 
 /**
- * Strips local system temp directory paths from error messages
- * to provide clean, professional compiler and runtime outputs.
+ * Sanitizes compiler/runtime error output so temporary filesystem paths
+ * are replaced with clean, professional source references.
  */
 function sanitizeOutput(text, tempDir) {
-  if (!text) return '';
-  const escaped = tempDir.replace(/\\/g, '\\\\');
-  const regex = new RegExp(escaped, 'gi');
-  return text.replace(regex, '.').replace(/[A-Za-z]:\\[^:\n\r]+[\\/]/g, '');
+  if (!text || typeof text !== 'string') return '';
+  return text.replaceAll(tempDir, '').replaceAll(tempDir.replace(/\\/g, '/'), '');
 }
 
 /**
- * Main service method to compile and execute code across Python, C++, and Java.
+ * Robust Contest-style output comparison.
+ * - Trims whitespace
+ * - Normalizes Windows/Unix line endings (\r\n -> \n)
+ * - Compares exact string or token-by-token (ignoring multiple spaces / trailing newlines)
  */
-export async function executeCode({ language, code, testCases = [], customInput = null, timeoutMs = 5000 }) {
-  if (!code || typeof code !== 'string') {
+export function compareOutputs(actual, expected) {
+  if (actual == null && expected == null) return true;
+  if (actual == null || expected == null) return false;
+
+  const normAct = String(actual).replace(/\r\n/g, '\n').trim();
+  const normExp = String(expected).replace(/\r\n/g, '\n').trim();
+
+  if (normAct === normExp) return true;
+
+  // Token-by-token comparison (handles multiple spaces, trailing newlines)
+  const actTokens = normAct.split(/\s+/).filter(Boolean);
+  const expTokens = normExp.split(/\s+/).filter(Boolean);
+
+  if (actTokens.length === expTokens.length) {
+    let allMatch = true;
+    for (let i = 0; i < actTokens.length; i++) {
+      if (actTokens[i] !== expTokens[i]) {
+        allMatch = false;
+        break;
+      }
+    }
+    if (allMatch) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Executes user-submitted code in competitive programming / contest style.
+ * 
+ * Supports:
+ * - Direct standalone programs from scratch (Codeforces style)
+ * - C++: compiled with g++ -std=c++17 and executed directly via stdin/stdout
+ * - Python: executed with python via stdin/stdout
+ * - Java: compiled with javac and executed via stdin/stdout
+ * - JavaScript: executed with node via stdin/stdout
+ * 
+ * Verdicts:
+ * - AC: Accepted (all test cases passed)
+ * - WA: Wrong Answer (one or more test cases produced incorrect output)
+ * - CE: Compilation Error (compiler failed)
+ * - RE: Runtime Error (crashed / non-zero exit code)
+ * - TLE: Time Limit Exceeded (execution exceeded timeout)
+ */
+export async function executeCode({
+  language,
+  code,
+  testCases = [],
+  customInput = null,
+  questionId = null,
+  timeoutMs = 5000,
+}) {
+  if (!code || typeof code !== 'string' || !code.trim()) {
     return {
       success: false,
       verdict: 'CE',
@@ -125,103 +168,18 @@ export async function executeCode({ language, code, testCases = [], customInput 
       totalCount: 0,
       executionTimeMs: 0,
       output: '',
-      error: 'Code cannot be empty',
+      error: 'Code cannot be empty. Please write your program in the editor.',
       testResults: [],
     };
   }
 
   const normalizedLang = (language || 'python').toLowerCase().trim();
-  const execDir = path.join(os.tmpdir(), `mm_exec_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
+  const execDir = path.join(os.tmpdir(), 'mm_exec_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8));
 
   try {
     fs.mkdirSync(execDir, { recursive: true });
 
-    let runCommand = '';
-    let runArgs = [];
-    let compilationError = null;
-
-    // 1. Language Compilation & Setup
-    if (normalizedLang === 'python' || normalizedLang === 'py') {
-      const filePath = path.join(execDir, 'solution.py');
-      fs.writeFileSync(filePath, code, 'utf8');
-      runCommand = 'python';
-      runArgs = ['solution.py'];
-
-    } else if (normalizedLang === 'cpp' || normalizedLang === 'c++') {
-      const sourceFile = path.join(execDir, 'solution.cpp');
-      const exeFile = path.join(execDir, 'solution.exe');
-      fs.writeFileSync(sourceFile, code, 'utf8');
-
-      // Compile C++
-      const compileResult = await runProcess({
-        command: 'g++',
-        args: ['solution.cpp', '-O2', '-std=c++17', '-o', 'solution.exe'],
-        cwd: execDir,
-        timeoutMs: 8000,
-      });
-
-      if (compileResult.timedOut || compileResult.exitCode !== 0) {
-        compilationError = sanitizeOutput(
-          compileResult.stderr || compileResult.stdout || 'Compilation failed',
-          execDir
-        );
-      } else {
-        runCommand = exeFile;
-        runArgs = [];
-      }
-
-    } else if (normalizedLang === 'java') {
-      // Extract public class name or fallback to Solution
-      const classMatch = code.match(/public\s+class\s+([A-Za-z0-9_]+)/);
-      const className = classMatch ? classMatch[1] : 'Solution';
-      const sourceFile = path.join(execDir, `${className}.java`);
-      fs.writeFileSync(sourceFile, code, 'utf8');
-
-      // Compile Java
-      const compileResult = await runProcess({
-        command: 'javac',
-        args: [`${className}.java`],
-        cwd: execDir,
-        timeoutMs: 8000,
-      });
-
-      if (compileResult.timedOut || compileResult.exitCode !== 0) {
-        compilationError = sanitizeOutput(
-          compileResult.stderr || compileResult.stdout || 'Compilation failed',
-          execDir
-        );
-      } else {
-        runCommand = 'java';
-        runArgs = [className];
-      }
-    } else {
-      return {
-        success: false,
-        verdict: 'CE',
-        passedCount: 0,
-        totalCount: 0,
-        executionTimeMs: 0,
-        output: '',
-        error: `Unsupported language: ${language}. Supported languages: python, cpp, java.`,
-        testResults: [],
-      };
-    }
-
-    // Return compilation error if occurred
-    if (compilationError) {
-      return {
-        success: false,
-        verdict: 'CE',
-        passedCount: 0,
-        totalCount: Math.max(testCases.length, 1),
-        executionTimeMs: 0,
-        output: '',
-        error: compilationError,
-        testResults: [],
-      };
-    }
-
-    // 2. Prepare Test Cases
+    // Prepare Test Cases to execute
     let testsToRun = [];
     if (Array.isArray(testCases) && testCases.length > 0) {
       testsToRun = testCases.map((tc, idx) => ({
@@ -247,12 +205,104 @@ export async function executeCode({ language, code, testCases = [], customInput 
       ];
     }
 
-    // 3. Execute against all test cases
+    let runCommand = '';
+    let runArgs = [];
+    let compilationError = null;
+
+    // 1. Language Compilation & Setup
+    if (normalizedLang === 'python' || normalizedLang === 'py') {
+      const filePath = path.join(execDir, 'solution.py');
+      fs.writeFileSync(filePath, code, 'utf8');
+      runCommand = 'python';
+      runArgs = ['solution.py'];
+
+    } else if (normalizedLang === 'cpp' || normalizedLang === 'c++') {
+      const sourceFile = path.join(execDir, 'solution.cpp');
+      const exeFile = path.join(execDir, 'solution.exe');
+      fs.writeFileSync(sourceFile, code, 'utf8');
+
+      // Direct contest compilation
+      const compileResult = await runProcess({
+        command: 'g++',
+        args: ['solution.cpp', '-std=c++17', '-o', 'solution.exe'],
+        cwd: execDir,
+        timeoutMs: 10000,
+      });
+
+      if (compileResult.timedOut || compileResult.exitCode !== 0) {
+        let rawErr = compileResult.stderr || compileResult.stdout || 'Compilation failed';
+        if (/undefined reference to [`']WinMain(@16)?['`]/i.test(rawErr)) {
+          rawErr = "Compilation Error: Entry point 'main()' not found.\nIn competitive programming, execution begins at 'int main() { ... }'. Please ensure your C++ program includes 'int main()'.";
+        }
+        compilationError = sanitizeOutput(rawErr, execDir);
+      } else {
+        runCommand = exeFile;
+        runArgs = [];
+      }
+
+    } else if (normalizedLang === 'java') {
+      // Find class name from code or default to Main
+      const classMatch = code.match(/(?:public\s+)?class\s+([A-Za-z0-9_]+)/);
+      const className = classMatch ? classMatch[1] : 'Main';
+      const sourceFile = path.join(execDir, className + '.java');
+      fs.writeFileSync(sourceFile, code, 'utf8');
+
+      // Compile Java
+      const compileResult = await runProcess({
+        command: 'javac',
+        args: [className + '.java'],
+        cwd: execDir,
+        timeoutMs: 10000,
+      });
+
+      if (compileResult.timedOut || compileResult.exitCode !== 0) {
+        compilationError = sanitizeOutput(
+          compileResult.stderr || compileResult.stdout || 'Compilation failed',
+          execDir
+        );
+      } else {
+        runCommand = 'java';
+        runArgs = [className];
+      }
+
+    } else if (normalizedLang === 'javascript' || normalizedLang === 'js') {
+      const filePath = path.join(execDir, 'solution.js');
+      fs.writeFileSync(filePath, code, 'utf8');
+      runCommand = 'node';
+      runArgs = ['solution.js'];
+
+    } else {
+      return {
+        success: false,
+        verdict: 'CE',
+        passedCount: 0,
+        totalCount: 0,
+        executionTimeMs: 0,
+        output: '',
+        error: 'Unsupported language: ' + language + '. Supported languages: cpp, python, java, javascript.',
+        testResults: [],
+      };
+    }
+
+    // Return compilation error if compilation failed
+    if (compilationError) {
+      return {
+        success: false,
+        verdict: 'CE',
+        passedCount: 0,
+        totalCount: Math.max(testsToRun.length, 1),
+        executionTimeMs: 0,
+        output: '',
+        error: compilationError,
+        testResults: [],
+      };
+    }
+
+    // 2. Execute against all test cases via stdin/stdout
     const testResults = [];
     let overallVerdict = 'AC';
     let totalExecTime = 0;
-    let primaryOutput = '';
-    let primaryError = null;
+    let firstErrorMsg = null;
 
     for (const test of testsToRun) {
       const execRes = await runProcess({
@@ -273,83 +323,89 @@ export async function executeCode({ language, code, testCases = [], customInput 
       if (execRes.timedOut) {
         testVerdict = 'TLE';
         testPassed = false;
-        testError = `Time Limit Exceeded (${timeoutMs}ms)`;
-        if (overallVerdict === 'AC') overallVerdict = 'TLE';
+        testError = 'Time Limit Exceeded (' + timeoutMs + 'ms)';
+        if (overallVerdict === 'AC' || overallVerdict === 'WA') {
+          overallVerdict = 'TLE';
+          if (!firstErrorMsg) firstErrorMsg = testError;
+        }
       } else if (execRes.exitCode !== 0) {
         testVerdict = 'RE';
         testPassed = false;
-        testError = sanitizeOutput(execRes.stderr || 'Runtime Error (non-zero exit code)', execDir);
-        if (overallVerdict === 'AC' || overallVerdict === 'WA') overallVerdict = 'RE';
+        testError = sanitizeOutput(
+          execRes.stderr || 'Runtime Error: process terminated with non-zero exit code',
+          execDir
+        );
+        if (overallVerdict === 'AC' || overallVerdict === 'WA') {
+          overallVerdict = 'RE';
+          if (!firstErrorMsg) firstErrorMsg = testError;
+        }
       } else {
-        const actualTrimmed = execRes.stdout.trimEnd();
+        const actualOutput = execRes.stdout;
         if (test.expectedOutput != null) {
-          const expectedTrimmed = test.expectedOutput.trimEnd();
-          if (actualTrimmed === expectedTrimmed) {
+          const isMatch = compareOutputs(actualOutput, test.expectedOutput);
+          if (isMatch) {
             testVerdict = 'AC';
             testPassed = true;
           } else {
             testVerdict = 'WA';
             testPassed = false;
-            testError = 'Output did not match expected output';
-            if (overallVerdict === 'AC') overallVerdict = 'WA';
+            testError = null; // WA is an expected output mismatch, not an exception
+            if (overallVerdict === 'AC') {
+              overallVerdict = 'WA';
+            }
           }
         } else {
+          // Custom input execution without expected output
           testVerdict = 'AC';
           testPassed = true;
         }
       }
 
-      if (!primaryOutput && execRes.stdout) {
-        primaryOutput = execRes.stdout;
-      }
-      if (!primaryError && testError) {
-        primaryError = testError;
-      }
-
       testResults.push({
-        testIndex: test.index,
+        index: test.index,
         input: test.input,
         expectedOutput: test.expectedOutput,
-        actualOutput: execRes.stdout,
+        actualOutput: execRes.stdout.trimEnd(),
         passed: testPassed,
         verdict: testVerdict,
-        executionTimeMs: execDuration,
+        durationMs: execDuration,
         error: testError,
       });
     }
 
     const passedCount = testResults.filter((t) => t.passed).length;
-    const avgTimeMs = Math.round(totalExecTime / testResults.length);
+    const totalCount = testResults.length;
+    const primaryOutput = testResults[0]?.actualOutput || '';
 
     return {
       success: overallVerdict === 'AC',
       verdict: overallVerdict,
       passedCount,
-      totalCount: testResults.length,
-      executionTimeMs: avgTimeMs,
-      output: primaryOutput || (overallVerdict === 'AC' ? 'Program finished with code 0' : ''),
-      error: primaryError,
+      totalCount,
+      executionTimeMs: totalExecTime,
+      output: primaryOutput,
+      // Error message is ONLY populated for true runtime/TLE/CE failures, never for WA!
+      error: firstErrorMsg,
       testResults,
     };
+
   } catch (err) {
     return {
       success: false,
       verdict: 'RE',
       passedCount: 0,
-      totalCount: Math.max(testCases.length, 1),
+      totalCount: 1,
       executionTimeMs: 0,
       output: '',
-      error: err.message || 'Unknown internal execution error',
+      error: err.message || 'Execution failed unexpectedly',
       testResults: [],
     };
   } finally {
-    // Clean up temporary workspace directory
+    // Clean up temporary execution directory
     try {
       if (fs.existsSync(execDir)) {
         fs.rmSync(execDir, { recursive: true, force: true });
       }
-    } catch (e) {
-      // Ignore cleanup error
-    }
+    } catch (_) {}
   }
 }

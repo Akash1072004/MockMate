@@ -305,6 +305,21 @@ export default function InterviewerDashboard() {
     }
   };
 
+  const handleAcceptOnly = async (req) => {
+    setActionLoading(req.id);
+    setActionError('');
+    try {
+      const res = await acceptRequest(req);
+      setActionSuccess(`Interview request from ${req.candidate_name || 'candidate'} accepted! You can schedule it anytime from the Waiting tab.`);
+      setTimeout(() => setActionSuccess(''), 5000);
+      setActiveTab('waiting');
+    } catch (err) {
+      setActionError(err.message || 'Failed to accept interview request.');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const handleConfirmSchedule = async ({ scheduledAt, duration }) => {
     if (!schedulingRequest) return;
     const req = schedulingRequest;
@@ -792,11 +807,21 @@ export default function InterviewerDashboard() {
                           <span>Decline</span>
                         </button>
                         <button
+                          onClick={() => handleAcceptOnly(req)}
+                          disabled={actionLoading === req.id}
+                          className="btn btn-outline btn-sm"
+                          style={{ color: '#10b981', borderColor: 'rgba(16,185,129,0.4)' }}
+                          title="Accept request now, schedule later"
+                        >
+                          <CheckCircle2 size={15} />
+                          <span>{actionLoading === req.id ? 'Accepting...' : 'Accept'}</span>
+                        </button>
+                        <button
                           onClick={() => setSchedulingRequest(req)}
                           disabled={actionLoading === req.id}
                           className="btn btn-primary btn-sm"
                         >
-                          <CheckCircle2 size={15} />
+                          <Calendar size={15} />
                           <span>{actionLoading === req.id ? 'Creating Session...' : 'Accept & Schedule'}</span>
                         </button>
                       </div>

@@ -47,6 +47,7 @@ import {
   User,
   MessageSquare,
   Maximize2,
+  Minimize2,
   HelpCircle
 } from 'lucide-react';
 
@@ -117,50 +118,64 @@ export default function AIInterviewPage() {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [completing, setCompleting] = useState(false);
   const [showAiChatInCoding, setShowAiChatInCoding] = useState(true);
+  // Manual coding editor toggle state (separate from authoritative currentStage)
+  const [codingEditorOpen, setCodingEditorOpen] = useState(false);
+  const isEditorVisible = currentStage === 'coding' || codingEditorOpen;
+  // UI-only LeetCode-style expanded workspace state (leaves AI interview & state machine unchanged)
+  const [editorExpanded, setEditorExpanded] = useState(false);
 
-  // Resizable coding IDE state (Problem Panel <-> Code Editor divider)
-  const [codingPanelWidth, setCodingPanelWidth] = useState(() => {
+  // Resizable Problem Statement panel (Top Problem Statement <-> Monaco Code Editor)
+  const [problemHeight, setProblemHeight] = useState(() => {
     try {
-      const saved = localStorage.getItem('mockmate_ai_panel_width');
+      const saved = localStorage.getItem('mockmate_problem_height');
       const num = Number(saved);
-      return !isNaN(num) && num >= 260 && num <= 850 ? num : 380;
+      return !isNaN(num) && num >= 90 && num <= 450 ? num : 200;
     } catch (_) {
-      return 440;
+      return 200;
     }
   });
-  const [isResizingCoding, setIsResizingCoding] = useState(false);
+  const [problemCollapsed, setProblemCollapsed] = useState(false);
+  const [isResizingProblem, setIsResizingProblem] = useState(false);
+  const problemResizeStartYRef = useRef(0);
+  const problemResizeStartHRef = useRef(200);
 
-  const handleMouseDownCodingResize = (e) => {
+  const handleMouseDownProblemResize = (e) => {
     e.preventDefault();
-    setIsResizingCoding(true);
+    setIsResizingProblem(true);
+    problemResizeStartYRef.current = e.clientY;
+    problemResizeStartHRef.current = problemHeight;
   };
 
   useEffect(() => {
-    if (!isResizingCoding) return;
+    if (!isResizingProblem) return;
+
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'row-resize';
 
     const handleMouseMove = (e) => {
-      const maxW = Math.max(350, window.innerWidth - 480);
-      const newWidth = Math.max(280, Math.min(e.clientX, maxW));
-      setCodingPanelWidth(newWidth);
+      const deltaY = e.clientY - problemResizeStartYRef.current;
+      const newHeight = Math.max(80, Math.min(problemResizeStartHRef.current + deltaY, 450));
+      setProblemHeight(newHeight);
+      try {
+        localStorage.setItem('mockmate_problem_height', String(newHeight));
+      } catch (_) {}
     };
 
     const handleMouseUp = () => {
-      setIsResizingCoding(false);
-      setCodingPanelWidth((w) => {
-        try {
-          localStorage.setItem('mockmate_ai_panel_width', String(w));
-        } catch (_) {}
-        return w;
-      });
+      setIsResizingProblem(false);
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
     };
 
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
     return () => {
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isResizingCoding]);
+  }, [isResizingProblem]);
 
   // STRICT In-flight and completion guards to avoid race conditions & duplicate API requests
   const inFlightRef = useRef(false);
@@ -908,23 +923,55 @@ export default function AIInterviewPage() {
    * Candidate completes coding and clicks "Submit Solution & Continue to Review"
    */
   const handleCompleteCodingStage = async () => {
-    await transitionCodingOut({ isSkip: false });
+    if (currentStage === 'coding') {
+      await transitionCodingOut({ isSkip: false });
+    } else {
+      // Manual editor mode outside coding stage: record code snapshot and close editor
+      const currentProb = activeCodingProblemRef.current || DEFAULT_CODING_PROBLEM;
+      const latestCode = codeRef.current;
+      hasSubmittedCodeRef.current = true;
+      const codingQuestionId = questionsMap['coding'];
+
+      const codingQa = {
+        stage: 'coding',
+        question: currentProb ? `${currentProb.title} (${currentProb.topic})` : 'Manual Coding Solution',
+        answer: `Completed coding solution submitted in ${languageRef.current.toUpperCase()}.`,
+        codeSnapshot: latestCode,
+        questionId: codingQuestionId,
+        codingOutcome: 'submitted',
+        timestamp: new Date().toISOString(),
+      };
+      qaHistoryRef.current = [...qaHistoryRef.current.filter((q) => q.stage !== 'coding'), codingQa];
+
+      setActionToast({
+        type: 'success',
+        message: '✓ Code solution saved to your interview record.',
+      });
+      setTimeout(() => setActionToast(null), 4000);
+      setCodingEditorOpen(false);
+    }
   };
 
   /**
    * Candidate cannot solve and clicks "I Can't Solve This" skip button
    */
   const handleSkipCodingStage = async () => {
-    if (inFlightRef.current || completedRef.current || currentStage !== 'coding') return;
-    const confirmed = window.confirm(
-      "Are you sure you want to move on? This problem will be recorded as skipped, and you will proceed to complexity & conceptual questions."
-    );
-    if (!confirmed) return;
+    if (inFlightRef.current || completedRef.current) return;
+    if (currentStage === 'coding') {
+      const confirmed = window.confirm(
+        "Are you sure you want to move on? This problem will be recorded as skipped, and you will proceed to complexity & conceptual questions."
+      );
+      if (!confirmed) return;
 
-    await transitionCodingOut({
-      isSkip: true,
-      skipReason: 'Candidate chose to skip via "I Can\'t Solve This" button.',
-    });
+      await transitionCodingOut({
+        isSkip: true,
+        skipReason: 'Candidate chose to skip via "I Can\'t Solve This" button.',
+      });
+    } else {
+      // In manual editor mode outside coding stage, just close the editor workspace
+      hasSkippedCodeRef.current = true;
+      setCodingEditorOpen(false);
+    }
   };
 
   // Authoritative Finish Interview flow
@@ -1418,6 +1465,52 @@ export default function AIInterviewPage() {
           </div>
 
           <button
+            type="button"
+            onClick={() => setCodingEditorOpen((prev) => !prev)}
+            className="btn btn-sm"
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '0.4rem',
+              background: isEditorVisible ? 'rgba(99, 102, 241, 0.2)' : 'rgba(255, 255, 255, 0.08)',
+              border: isEditorVisible ? '1px solid #6366f1' : '1px solid var(--border-subtle)',
+              color: isEditorVisible ? '#818cf8' : '#e2e8f0',
+              fontWeight: 600,
+              padding: '0.4rem 0.85rem',
+              cursor: 'pointer',
+              transition: 'all 0.2s ease',
+            }}
+            title={isEditorVisible ? 'Hide code editor workspace' : 'Open code editor workspace at any time'}
+          >
+            <Code2 size={16} />
+            <span>{isEditorVisible ? 'Hide Code Editor' : '💻 Open Code Editor'}</span>
+          </button>
+
+          {isEditorVisible && (
+            <button
+              type="button"
+              onClick={() => setEditorExpanded((prev) => !prev)}
+              className="btn btn-sm"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.4rem',
+                background: editorExpanded ? 'rgba(99, 102, 241, 0.25)' : 'rgba(255, 255, 255, 0.08)',
+                border: editorExpanded ? '1px solid #6366f1' : '1px solid var(--border-subtle)',
+                color: editorExpanded ? '#a5b4fc' : '#e2e8f0',
+                fontWeight: 600,
+                padding: '0.4rem 0.85rem',
+                cursor: 'pointer',
+                transition: 'all 0.2s ease',
+              }}
+              title={editorExpanded ? 'Exit fullscreen coding workspace' : 'Expand coding workspace to full width'}
+            >
+              {editorExpanded ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+              <span>{editorExpanded ? '↙ Exit Fullscreen' : '⛶ Expand Editor'}</span>
+            </button>
+          )}
+
+          <button
             onClick={() => setVoiceEnabled(!voiceEnabled)}
             className="btn btn-ghost btn-sm"
             style={{ color: voiceEnabled ? '#10b981' : 'var(--text-muted)' }}
@@ -1450,110 +1543,178 @@ export default function AIInterviewPage() {
       </div>
 
       {/* MAIN CONTENT AREA */}
-      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: currentStage === 'coding' ? '1fr 340px' : '1fr 320px', overflow: 'hidden' }}>
+      <div style={{ flex: 1, display: 'grid', gridTemplateColumns: (isEditorVisible && editorExpanded) ? '1fr 0px' : isEditorVisible ? '1fr 340px' : '1fr 320px', overflow: 'hidden' }}>
         
         {/* LEFT / CENTER VIEW */}
         <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
           
-          {/* STAGE 5: CODING SPLIT VIEW (Problem Panel + Drag Divider + Monaco IDE + Console + Submit Bar) */}
-          {currentStage === 'coding' ? (
+          {/* CONTEST CODING VIEW (Problem Statement Top + Resizable Divider + Monaco IDE Center + Console Bottom + Submit Bar) */}
+          {isEditorVisible ? (
             <div style={{ 
               flex: 1, 
-              display: 'grid', 
-              gridTemplateColumns: `${codingPanelWidth}px 6px 1fr`, 
+              display: 'flex',
+              flexDirection: 'column',
               height: '100%', 
               overflow: 'hidden',
-              userSelect: isResizingCoding ? 'none' : 'auto',
+              userSelect: isResizingProblem ? 'none' : 'auto',
             }}>
-              {/* Problem Description Panel */}
-              <div style={{ height: '100%', overflowY: 'auto', borderRight: '1px solid var(--border-subtle)', background: '#0d1321' }}>
-                <LeetCodeQuestionPanel
-                  question={activeCodingProblem || DEFAULT_CODING_PROBLEM}
-                  activeQuestion={activeCodingProblem || DEFAULT_CODING_PROBLEM}
-                  questions={[activeCodingProblem || DEFAULT_CODING_PROBLEM]}
-                />
-              </div>
-
-              {/* Draggable Horizontal Resizing Divider (Problem Panel <-> Code Editor) */}
-              <div
-                onMouseDown={handleMouseDownCodingResize}
-                title="Drag to resize Problem Panel and Code Editor"
-                style={{
-                  width: '6px',
-                  cursor: 'col-resize',
-                  background: isResizingCoding ? '#6366f1' : 'rgba(255, 255, 255, 0.08)',
-                  zIndex: 10,
-                  transition: isResizingCoding ? 'none' : 'background 0.2s',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                <div style={{ width: '2px', height: '32px', background: isResizingCoding ? '#a5b4fc' : 'rgba(255, 255, 255, 0.25)', borderRadius: '1px' }} />
-              </div>
-
-              {/* Monaco Code Editor with Language Selector, Vertical Console Divider, Console Drawer & Action Bar */}
-              <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
-                <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-                  <CollaborativeCodeEditor
-                    code={code}
-                    language={language}
-                    onCodeChange={handleCodeChange}
-                    onLanguageChange={handleLanguageChange}
-                    onResetTemplate={handleResetTemplate}
-                    interviewId={interview?.id || 'mock-ai-room'}
-                    questionId={activeCodingProblem?.id || 'two-sum'}
-                    readOnly={false}
-                  />
-                </div>
-                
-                {/* Submit Solution & Skip Bar (Always pinned at bottom of Code Editor, never clipped) */}
+              {/* Problem Statement Section (Top) */}
+              <div style={{
+                height: problemCollapsed ? '40px' : `${problemHeight}px`,
+                overflow: 'hidden',
+                background: '#0d1321',
+                borderBottom: '1px solid var(--border-subtle)',
+                display: 'flex',
+                flexDirection: 'column',
+                flexShrink: 0,
+                transition: isResizingProblem ? 'none' : 'height 0.15s ease',
+              }}>
                 <div style={{
-                  padding: '0.6rem 1.25rem',
-                  background: '#0d111b',
-                  borderTop: '1px solid var(--border-subtle)',
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
-                  gap: '1rem',
-                  flexWrap: 'wrap',
+                  padding: '0.35rem 1rem',
+                  background: '#090d16',
+                  borderBottom: '1px solid var(--border-subtle)',
                   flexShrink: 0,
-                  zIndex: 15,
                 }}>
-                  <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                    Language: <span style={{ color: '#38bdf8', fontWeight: 600 }}>{language.toUpperCase()}</span> • Run code or ask Alex in the chat before submitting.
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+                    <span style={{ fontWeight: 700, fontSize: '0.85rem', color: '#f8fafc' }}>
+                      {activeCodingProblem?.title || 'Coding Problem'}
+                    </span>
+                    <span style={{
+                      fontSize: '0.72rem',
+                      fontWeight: 700,
+                      padding: '0.12rem 0.5rem',
+                      borderRadius: '12px',
+                      background: activeCodingProblem?.difficulty === 'Easy' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)',
+                      color: activeCodingProblem?.difficulty === 'Easy' ? '#34d399' : '#fbbf24',
+                      border: `1px solid ${activeCodingProblem?.difficulty === 'Easy' ? 'rgba(16, 185, 129, 0.3)' : 'rgba(245, 158, 11, 0.3)'}`,
+                    }}>
+                      {activeCodingProblem?.difficulty || 'Medium'}
+                    </span>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      Topic: <span style={{ color: '#94a3b8' }}>{activeCodingProblem?.topic || 'Algorithms'}</span>
+                    </span>
                   </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                    <button
-                      type="button"
-                      onClick={handleSkipCodingStage}
-                      disabled={isAiTyping || inFlightRef.current || completing}
-                      className="btn btn-outline-danger btn-sm"
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '0.4rem',
-                        borderColor: 'rgba(239, 68, 68, 0.4)',
-                        color: '#f87171',
-                        background: 'rgba(239, 68, 68, 0.05)',
-                        cursor: isAiTyping || inFlightRef.current || completing ? 'not-allowed' : 'pointer',
-                      }}
-                      title="Skip this coding problem if you are stuck or unable to solve it"
-                    >
-                      <HelpCircle size={15} />
-                      <span>I Can't Solve This</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleCompleteCodingStage}
-                      disabled={isAiTyping || inFlightRef.current || completing}
-                      className="btn btn-primary btn-sm"
-                      style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 600 }}
-                    >
-                      <CheckCircle2 size={16} />
-                      <span>Submit Solution & Continue to Review</span>
-                    </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setProblemCollapsed((prev) => !prev)}
+                    className="btn btn-outline btn-sm"
+                    style={{
+                      padding: '0.2rem 0.6rem',
+                      fontSize: '0.72rem',
+                      color: '#a5b4fc',
+                      borderColor: 'var(--border-subtle)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.3rem',
+                    }}
+                    title={problemCollapsed ? "Expand problem description" : "Collapse problem description to give editor more space"}
+                  >
+                    <span>{problemCollapsed ? '▼ Show Problem' : '▲ Collapse Problem'}</span>
+                  </button>
+                </div>
+
+                {!problemCollapsed && (
+                  <div style={{ flex: 1, overflowY: 'auto' }}>
+                    <LeetCodeQuestionPanel
+                      question={activeCodingProblem || DEFAULT_CODING_PROBLEM}
+                      activeQuestion={activeCodingProblem || DEFAULT_CODING_PROBLEM}
+                      questions={[activeCodingProblem || DEFAULT_CODING_PROBLEM]}
+                    />
                   </div>
+                )}
+              </div>
+
+              {/* Draggable Divider (Problem Statement <-> Monaco Code Editor) */}
+              {!problemCollapsed && (
+                <div
+                  onMouseDown={handleMouseDownProblemResize}
+                  title="Drag to resize Problem Statement and Code Editor"
+                  style={{
+                    height: '6px',
+                    cursor: 'row-resize',
+                    background: isResizingProblem ? '#6366f1' : 'rgba(255, 255, 255, 0.08)',
+                    zIndex: 10,
+                    transition: isResizingProblem ? 'none' : 'background 0.2s',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0,
+                  }}
+                >
+                  <div style={{ width: '36px', height: '2px', background: isResizingProblem ? '#a5b4fc' : 'rgba(255, 255, 255, 0.25)', borderRadius: '1px' }} />
+                </div>
+              )}
+
+              {/* Monaco Code Editor Workspace (Large, Manageable, Contest-Style) */}
+              <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+                <CollaborativeCodeEditor
+                  code={code}
+                  language={language}
+                  onCodeChange={handleCodeChange}
+                  onLanguageChange={handleLanguageChange}
+                  onResetTemplate={handleResetTemplate}
+                  interviewId={interview?.id || 'mock-ai-room'}
+                  questionId={activeCodingProblem?.id || 'two-sum'}
+                  testCases={activeCodingProblem?.testCases || []}
+                  isExpanded={editorExpanded}
+                  onToggleExpand={() => setEditorExpanded((prev) => !prev)}
+                  onSubmit={handleCompleteCodingStage}
+                  isSubmitting={isAiTyping || inFlightRef.current || completing}
+                  onSkip={handleSkipCodingStage}
+                  readOnly={false}
+                />
+              </div>
+
+              {/* Pinned Bottom Submit Solution & Skip Bar */}
+              <div style={{
+                padding: '0.55rem 1.25rem',
+                background: '#0d111b',
+                borderTop: '1px solid var(--border-subtle)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '1rem',
+                flexWrap: 'wrap',
+                flexShrink: 0,
+                zIndex: 15,
+              }}>
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  Language: <span style={{ color: '#38bdf8', fontWeight: 600 }}>{language.toUpperCase()}</span> • Codeforces style: read from standard input, write to standard output.
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                  <button
+                    type="button"
+                    onClick={handleSkipCodingStage}
+                    disabled={isAiTyping || inFlightRef.current || completing}
+                    className="btn btn-outline-danger btn-sm"
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.4rem',
+                      borderColor: 'rgba(239, 68, 68, 0.4)',
+                      color: '#f87171',
+                      background: 'rgba(239, 68, 68, 0.05)',
+                      cursor: isAiTyping || inFlightRef.current || completing ? 'not-allowed' : 'pointer',
+                    }}
+                    title="Skip this coding problem if you are stuck or unable to solve it"
+                  >
+                    <HelpCircle size={15} />
+                    <span>I Can't Solve This</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCompleteCodingStage}
+                    disabled={isAiTyping || inFlightRef.current || completing}
+                    className="btn btn-primary btn-sm"
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontWeight: 600 }}
+                  >
+                    <CheckCircle2 size={16} />
+                    <span>{currentStage === 'coding' ? 'Submit Solution & Continue to Review →' : 'Save & Submit Solution'}</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -1816,12 +1977,12 @@ export default function AIInterviewPage() {
           )}
         </div>
 
-        {/* RIGHT PANEL: AI INTERVIEW CHAT (during Coding Stage) OR 7-STAGE PROGRESS & RESUME CONTEXT (other stages) */}
-        {currentStage === 'coding' ? (
+        {/* RIGHT PANEL: AI INTERVIEW CHAT (during Coding / Editor View) OR 7-STAGE PROGRESS & RESUME CONTEXT (other stages) */}
+        {isEditorVisible ? (
           <div style={{
             background: '#0e1422',
             borderLeft: '1px solid var(--border-subtle)',
-            display: 'flex',
+            display: (isEditorVisible && editorExpanded) ? 'none' : 'flex',
             flexDirection: 'column',
             height: '100%',
             overflow: 'hidden',

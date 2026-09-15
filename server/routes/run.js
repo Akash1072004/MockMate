@@ -15,7 +15,7 @@ const MAX_CODE_LENGTH = 100000; // 100 KB max source code
  */
 router.post('/', async (req, res, next) => {
   try {
-    const { language, code, testCases, customInput, interviewId, questionId, timeoutMs } = req.body || {};
+    const { language, code, testCases, customInput, interviewId, questionId, timeoutMs, problemMetadata } = req.body || {};
 
     if (!code || typeof code !== 'string') {
       return res.status(400).json({

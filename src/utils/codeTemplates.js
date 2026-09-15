@@ -1,56 +1,58 @@
 /**
- * Starter boilerplate code templates for C++, Java, and Python
+ * Clean Contest Starter Templates for Competitive Programming (Codeforces Style)
+ * Candidates start with a clean template and write the complete program from scratch.
  */
 
 export const CODE_TEMPLATES = {
-  python: `# Python 3.12 Solution
-import sys
-
-def solve():
-    """
-    Implement your algorithm solution here.
-    """
-    print("Solution executed successfully")
-
-if __name__ == "__main__":
-    solve()
-`,
-
-  cpp: `// C++ 17 Solution
-#include <iostream>
-#include <vector>
-#include <string>
-#include <algorithm>
-
+  cpp: `#include <bits/stdc++.h>
 using namespace std;
 
 int main() {
     ios_base::sync_with_stdio(false);
     cin.tie(NULL);
 
-    // Implement your algorithm solution here
-    cout << "Solution executed successfully" << "\\n";
+    // Write your solution here
 
     return 0;
 }
 `,
 
-  java: `// Java 21 Solution
-import java.util.*;
+  python: `import sys
+
+def main():
+    # Read from standard input
+    input_data = sys.stdin.read().split()
+    if not input_data:
+        return
+
+    # Write your solution here
+
+
+if __name__ == '__main__':
+    main()
+`,
+
+  java: `import java.util.*;
 import java.io.*;
 
-public class Solution {
+public class Main {
     public static void main(String[] args) {
-        // Implement your algorithm solution here
-        System.out.println("Solution executed successfully");
+        Scanner sc = new Scanner(System.in);
+
+        // Write your solution here
+
     }
 }
 `,
 
-  javascript: `// JavaScript (Node.js) Solution
+  javascript: `const fs = require('fs');
+
 function solve() {
-    // Implement your algorithm solution here
-    console.log("Solution executed successfully");
+    const input = fs.readFileSync(0, 'utf-8').trim();
+    if (!input) return;
+
+    // Write your solution here
+
 }
 
 solve();
@@ -58,8 +60,8 @@ solve();
 };
 
 export const LANGUAGE_OPTIONS = [
+  { id: 'cpp', label: 'C++ 17 (GCC)', ext: 'cpp' },
   { id: 'python', label: 'Python 3', ext: 'py' },
-  { id: 'cpp', label: 'C++ (GCC)', ext: 'cpp' },
   { id: 'java', label: 'Java 21', ext: 'java' },
   { id: 'javascript', label: 'JavaScript (Node.js)', ext: 'js' },
 ];
