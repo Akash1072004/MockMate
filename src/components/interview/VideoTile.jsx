@@ -62,6 +62,28 @@ export default function VideoTile({
     }
   }, [stream, attemptPlay]);
 
+  // Auto-unblock audio on first user gesture if browser blocked unmuted autoplay
+  useEffect(() => {
+    if (!autoplayBlocked || isLocal) return;
+
+    const unblockAudio = () => {
+      const el = videoElRef.current;
+      if (el) {
+        el.play()
+          .then(() => setAutoplayBlocked(false))
+          .catch(() => {});
+      }
+    };
+
+    window.addEventListener('click', unblockAudio, { once: true });
+    window.addEventListener('keydown', unblockAudio, { once: true });
+
+    return () => {
+      window.removeEventListener('click', unblockAudio);
+      window.removeEventListener('keydown', unblockAudio);
+    };
+  }, [autoplayBlocked, isLocal]);
+
   const handleEnableAudio = () => {
     const el = videoElRef.current;
     if (el) {

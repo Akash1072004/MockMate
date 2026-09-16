@@ -3,11 +3,11 @@ import { supabase } from '../lib/supabase';
 import { updateInterviewCode } from '../services/interviewService';
 import { CODE_TEMPLATES } from '../utils/codeTemplates';
 
-export function useCollaborativeCode({ 
-  interviewId, 
-  userId, 
+export function useCollaborativeCode({
+  interviewId,
+  userId,
   questionId = null,
-  initialCode = '', 
+  initialCode = '',
   initialLanguage = 'python',
   starterCodeByLang = null,
   availableLanguages = null,
@@ -15,17 +15,15 @@ export function useCollaborativeCode({
   const [language, setLanguage] = useState(initialLanguage || 'python');
   const [code, setCode] = useState(initialCode || CODE_TEMPLATES[initialLanguage || 'python'] || '');
   const [syncStatus, setSyncStatus] = useState('synced'); // 'synced' | 'syncing' | 'remote'
-  
+
   const channelRef = useRef(null);
   const channelSubscribedRef = useRef(false);
   const debounceTimerRef = useRef(null);
   const broadcastThrottleTimerRef = useRef(null);
   const pendingBroadcastRef = useRef(null);
   const isReceivingRemoteRef = useRef(false);
-  const lastLocalEditTimeRef = useRef(0);
-  const latestRemoteTimestampRef = useRef(0);
   const localVersionRef = useRef(0);
-  const hasLoadedInitialRef = useRef(false);
+  const remoteVersionBySenderRef = useRef({});
 
   const currentQuestionIdRef = useRef(questionId);
   const prevQuestionIdRef = useRef(questionId);
@@ -51,7 +49,7 @@ export function useCollaborativeCode({
     return CODE_TEMPLATES[lang] || '';
   }, [starterCodeByLang]);
 
-  // Question switching effect: preserve previous question code and restore target question code
+  // Question switching effect
   useEffect(() => {
     const prevQId = prevQuestionIdRef.current;
     if (prevQId && prevQId !== questionId) {
@@ -67,7 +65,6 @@ export function useCollaborativeCode({
 
     if (!questionId) return;
 
-    // Determine target language respecting availableLanguages
     let targetLang = currentLangRef.current;
     if (Array.isArray(availableLanguages) && availableLanguages.length > 0) {
       if (!availableLanguages.includes(targetLang)) {
@@ -75,7 +72,6 @@ export function useCollaborativeCode({
       }
     }
 
-    // Load code for new question
     const qCache = codeCacheRef.current[questionId];
     if (qCache) {
       const preferredLang = qCache._activeLang && (!Array.isArray(availableLanguages) || availableLanguages.includes(qCache._activeLang))
@@ -99,26 +95,6 @@ export function useCollaborativeCode({
     }
   }, [questionId, availableLanguages, getStarterForLang]);
 
-  // Sync initial values when loaded from database on session mount / refresh
-  useEffect(() => {
-    if (hasLoadedInitialRef.current) return;
-
-    if (initialLanguage && initialLanguage !== currentLangRef.current) {
-      setLanguage(initialLanguage);
-      currentLangRef.current = initialLanguage;
-    }
-    if (initialCode !== undefined && initialCode !== null && initialCode !== '') {
-      setCode(initialCode);
-      currentCodeRef.current = initialCode;
-      hasLoadedInitialRef.current = true;
-      if (questionId) {
-        if (!codeCacheRef.current[questionId]) codeCacheRef.current[questionId] = {};
-        codeCacheRef.current[questionId][initialLanguage || language] = initialCode;
-        codeCacheRef.current[questionId]._activeLang = initialLanguage || language;
-      }
-    }
-  }, [initialCode, initialLanguage, questionId]);
-
   // Helper to send broadcast payload safely
   const sendBroadcastMessage = useCallback((event, payload) => {
     if (!channelRef.current || !channelSubscribedRef.current) {
@@ -140,7 +116,8 @@ export function useCollaborativeCode({
   useEffect(() => {
     if (!interviewId || !userId || !supabase) return;
 
-    const channel = supabase.channel(`interview_code_${interviewId}`, {
+    const channelName = 'interview_code_' + interviewId;
+    const channel = supabase.channel(channelName, {
       config: { broadcast: { self: false } },
     });
 
@@ -148,15 +125,14 @@ export function useCollaborativeCode({
       .on('broadcast', { event: 'code-change' }, ({ payload }) => {
         if (!payload || payload.senderId === userId) return;
 
-        // Discard stale out-of-order packets
-        if (payload.timestamp && payload.timestamp < latestRemoteTimestampRef.current) {
+        console.log('[COLLAB] broadcast received', { senderId: payload.senderId, version: payload.version });
+
+        // Discard out-of-order packets from this sender using monotonic versioning
+        if (payload.version && remoteVersionBySenderRef.current[payload.senderId] && payload.version <= remoteVersionBySenderRef.current[payload.senderId]) {
           return;
         }
-        latestRemoteTimestampRef.current = payload.timestamp || Date.now();
-
-        // If local user typed more recently than this payload was created, preserve local edits
-        if (payload.timestamp && payload.timestamp < lastLocalEditTimeRef.current) {
-          return;
+        if (payload.version) {
+          remoteVersionBySenderRef.current[payload.senderId] = payload.version;
         }
 
         // If payload belongs to another question, update cache without altering active view
@@ -179,13 +155,13 @@ export function useCollaborativeCode({
             }
             codeCacheRef.current[currentQuestionIdRef.current][payload.language || currentLangRef.current] = payload.code;
           }
+          console.log('[COLLAB] remote code applied');
         }
         if (payload.language && payload.language !== currentLangRef.current) {
           setLanguage(payload.language);
           currentLangRef.current = payload.language;
         }
 
-        // Immediately release receiving flag on microtask so future local typing is never blocked
         queueMicrotask(() => {
           isReceivingRemoteRef.current = false;
         });
@@ -217,10 +193,50 @@ export function useCollaborativeCode({
           isReceivingRemoteRef.current = false;
         });
       })
+      .on('broadcast', { event: 'code-sync-request' }, ({ payload }) => {
+        if (!payload || payload.requesterId === userId) return;
+        console.log('[COLLAB] Peer requested code-sync:', payload.requesterId);
+        // If we have active code, reply with snapshot so joining peer receives current live code
+        if (currentCodeRef.current) {
+          sendBroadcastMessage('code-sync-response', {
+            targetUserId: payload.requesterId,
+            questionId: currentQuestionIdRef.current,
+            language: currentLangRef.current,
+            code: currentCodeRef.current,
+            version: localVersionRef.current,
+          });
+        }
+      })
+      .on('broadcast', { event: 'code-sync-response' }, ({ payload }) => {
+        if (!payload || payload.targetUserId !== userId) return;
+        console.log('[COLLAB] Received initial code snapshot from peer:', { length: payload.code ? payload.code.length : 0, lang: payload.language });
+
+        isReceivingRemoteRef.current = true;
+        if (payload.language && payload.language !== currentLangRef.current) {
+          setLanguage(payload.language);
+          currentLangRef.current = payload.language;
+        }
+        if (payload.code !== undefined && payload.code !== currentCodeRef.current) {
+          setCode(payload.code);
+          currentCodeRef.current = payload.code;
+          if (payload.questionId) {
+            if (!codeCacheRef.current[payload.questionId]) codeCacheRef.current[payload.questionId] = {};
+            codeCacheRef.current[payload.questionId][payload.language || currentLangRef.current] = payload.code;
+            codeCacheRef.current[payload.questionId]._activeLang = payload.language || currentLangRef.current;
+          }
+          console.log('[COLLAB] remote code applied (initial sync)');
+        }
+        queueMicrotask(() => {
+          isReceivingRemoteRef.current = false;
+        });
+      })
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
+          console.log('[COLLAB] channel subscribed');
           channelSubscribedRef.current = true;
-          // Flush any pending broadcast that occurred during initial connection
+          // Request initial code synchronization from any peer already in the room
+          sendBroadcastMessage('code-sync-request', { requesterId: userId });
+
           if (pendingBroadcastRef.current) {
             const { event, payload } = pendingBroadcastRef.current;
             pendingBroadcastRef.current = null;
@@ -264,7 +280,7 @@ export function useCollaborativeCode({
     }, 1800);
   }, [interviewId]);
 
-  // Low-latency broadcast dispatcher with 25ms burst coalescing
+  // Low-latency broadcast dispatcher with 20ms burst coalescing
   const dispatchCodeBroadcast = useCallback((newCode, lang) => {
     const payload = {
       senderId: userId,
@@ -275,27 +291,29 @@ export function useCollaborativeCode({
       version: ++localVersionRef.current,
     };
 
+    console.log('[COLLAB] local change', { length: newCode.length, lang });
+
     if (!broadcastThrottleTimerRef.current) {
       // Send immediately on leading edge
       sendBroadcastMessage('code-change', payload);
-      // Micro-coalesce subsequent rapid keystrokes within 25ms
+      console.log('[COLLAB] broadcast sent', { version: payload.version });
+      // Micro-coalesce subsequent rapid keystrokes within 20ms
       broadcastThrottleTimerRef.current = setTimeout(() => {
         broadcastThrottleTimerRef.current = null;
         if (pendingBroadcastRef.current && pendingBroadcastRef.current.event === 'code-change') {
           const next = pendingBroadcastRef.current.payload;
           pendingBroadcastRef.current = null;
           sendBroadcastMessage('code-change', next);
+          console.log('[COLLAB] broadcast sent (coalesced)', { version: next.version });
         }
-      }, 25);
+      }, 20);
     } else {
-      // Store latest keystroke state to be dispatched at end of micro-window
       pendingBroadcastRef.current = { event: 'code-change', payload };
     }
   }, [userId, sendBroadcastMessage]);
 
   // Local user updates code
   const handleCodeChange = (newCode) => {
-    lastLocalEditTimeRef.current = Date.now();
     setCode(newCode);
     currentCodeRef.current = newCode;
 

@@ -188,12 +188,16 @@ export default function CollaborativeCodeEditor({
           prevQuestionIdRef.current = questionId;
           editorRef.current.setValue(code);
         } else {
+          const prevSelection = editorRef.current.getSelection();
           editorRef.current.executeEdits('remote-sync', [{
             range: model.getFullModelRange(),
             text: code,
             forceMoveMarkers: true,
           }]);
           editorRef.current.pushUndoStop();
+          if (prevSelection) {
+            editorRef.current.setSelection(prevSelection);
+          }
         }
       } finally {
         isApplyingRemoteRef.current = false;

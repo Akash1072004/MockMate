@@ -73,7 +73,7 @@ export class WebRTCManager {
     this.userId = userId;
     this.userRole = userRole;
     this.isInitiator = userRole === 'interviewer';
-    this.isPolite = userRole === 'candidate'; // Polite peer rolls back in case of offer collision
+    this.isPolite = userRole === 'candidate';
 
     this.onRemoteStream = onRemoteStream;
     this.onConnectionStateChange = onConnectionStateChange;
@@ -99,29 +99,31 @@ export class WebRTCManager {
   async initLocalMedia({ video = true, audio = true } = {}) {
     if (this.isCleanedUp) return null;
 
+    console.log('[WebRTC] getUserMedia', { video, audio });
     try {
       this.localStream = await navigator.mediaDevices.getUserMedia({
         video: video ? { width: { ideal: 640, max: 1280 }, height: { ideal: 480, max: 720 }, frameRate: { ideal: 24, max: 30 } } : false,
         audio: audio ? { echoCancellation: true, noiseSuppression: true, autoGainControl: true } : false,
       });
 
-      // If peerConnection already exists, attach tracks immediately
+      console.log('[WebRTC] local stream created', this.localStream.getTracks().map((t) => t.kind));
+
       if (this.peerConnection && this.localStream) {
         this.attachLocalTracksToPeerConnection();
       }
 
       return this.localStream;
     } catch (err) {
-      console.warn('[WebRTCManager] Standard media constraints failed, attempting fallback:', err);
-      // Fallback: request unconstrained video/audio if ideal constraints failed
+      console.warn('[WebRTC] getUserMedia standard constraints failed, attempting fallback:', err);
       try {
         this.localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        console.log('[WebRTC] local stream created (fallback)', this.localStream.getTracks().map((t) => t.kind));
         if (this.peerConnection && this.localStream) {
           this.attachLocalTracksToPeerConnection();
         }
         return this.localStream;
       } catch (fallbackErr) {
-        console.error('[WebRTCManager] Media request failed:', fallbackErr);
+        console.error('[WebRTC] getUserMedia failed:', fallbackErr);
         throw fallbackErr;
       }
     }
@@ -135,16 +137,21 @@ export class WebRTCManager {
     if (!this.peerConnection || !this.localStream) return;
 
     const existingSenders = this.peerConnection.getSenders();
+    let count = 0;
     this.localStream.getTracks().forEach((track) => {
       const alreadyAdded = existingSenders.some((s) => s.track && s.track.id === track.id);
       if (!alreadyAdded) {
         try {
           this.peerConnection.addTrack(track, this.localStream);
+          count++;
         } catch (err) {
-          console.warn('[WebRTCManager] Error adding track to peer connection:', err);
+          console.warn('[WebRTC] Error adding track to peer connection:', err);
         }
       }
     });
+    if (count > 0) {
+      console.log('[WebRTC] tracks added', count);
+    }
   }
 
   /**
@@ -153,8 +160,8 @@ export class WebRTCManager {
   initSignaling() {
     if (!supabase || !this.interviewId || this.isCleanedUp) return;
 
-    // Use isolated channel name per interview
-    this.channel = supabase.channel(`interview_webrtc_${this.interviewId}`, {
+    const channelName = 'interview_webrtc_' + this.interviewId;
+    this.channel = supabase.channel(channelName, {
       config: { broadcast: { self: false } },
     });
 
@@ -165,33 +172,31 @@ export class WebRTCManager {
         try {
           switch (payload.type) {
             case 'ready':
-              // Peer announced readiness.
-              console.log(`[WebRTC Signaling] Received 'ready' from ${payload.senderRole || 'peer'}.`);
+              console.log('[WebRTC] Peer announced readiness (' + (payload.senderRole || 'peer') + ')');
               if (this.isInitiator && !this.makingOffer && (!this.peerConnection || this.peerConnection.signalingState === 'stable')) {
-                console.log('[WebRTC Signaling] As interviewer, initiating offer...');
+                console.log('[WebRTC] Initiating offer as interviewer...');
                 await this.createPeerConnection();
                 await this.sendOffer();
               } else if (!this.isInitiator) {
-                // As candidate, announce ready back so interviewer knows we are present
                 this.broadcastSignal({ type: 'ack-ready', role: this.userRole });
               }
               break;
 
             case 'ack-ready':
               if (this.isInitiator && !this.makingOffer && (!this.peerConnection || this.peerConnection.signalingState === 'stable')) {
-                console.log('[WebRTC Signaling] Received ack-ready from candidate. Generating offer...');
+                console.log('[WebRTC] Received ack-ready from candidate. Generating offer...');
                 await this.createPeerConnection();
                 await this.sendOffer();
               }
               break;
 
             case 'offer':
-              console.log('[WebRTC Signaling] Received SDP Offer from peer.');
+              console.log('[WebRTC] offer received');
               await this.handleOffer(payload.sdp);
               break;
 
             case 'answer':
-              console.log('[WebRTC Signaling] Received SDP Answer from peer.');
+              console.log('[WebRTC] answer received');
               await this.handleAnswer(payload.sdp);
               break;
 
@@ -208,7 +213,7 @@ export class WebRTCManager {
               break;
 
             case 'leave':
-              console.log('[WebRTC Signaling] Peer left the session.');
+              console.log('[WebRTC] Peer left the session.');
               this.handlePeerLeft();
               break;
 
@@ -216,14 +221,13 @@ export class WebRTCManager {
               break;
           }
         } catch (err) {
-          console.error('[WebRTC Signaling] Error handling payload:', err);
+          console.error('[WebRTC] Error handling signal payload:', err);
         }
       })
       .subscribe((status) => {
         if (status === 'SUBSCRIBED' && !this.isCleanedUp) {
-          console.log(`[WebRTC Signaling] Subscribed as ${this.userRole}. Announcing ready state...`);
+          console.log('[WebRTC] Subscribed to signaling as ' + this.userRole);
           if (this.onSignalingStateChange) this.onSignalingStateChange('subscribed');
-          // Announce readiness over signaling channel
           this.broadcastSignal({ type: 'ready', role: this.userRole });
         }
       });
@@ -235,12 +239,13 @@ export class WebRTCManager {
   async createPeerConnection() {
     if (this.peerConnection) return this.peerConnection;
 
+    console.log('[WebRTC] peer connection created');
     this.peerConnection = new RTCPeerConnection(RTC_CONFIG);
 
     // Monitor connection states
     this.peerConnection.onconnectionstatechange = () => {
       const state = this.peerConnection?.connectionState || 'disconnected';
-      console.log(`[WebRTC] Connection state: ${state}`);
+      console.log('[WebRTC] connection state: ' + state);
       if (this.onConnectionStateChange) {
         this.onConnectionStateChange(state);
       }
@@ -248,17 +253,24 @@ export class WebRTCManager {
 
     this.peerConnection.oniceconnectionstatechange = () => {
       const iceState = this.peerConnection?.iceConnectionState || 'disconnected';
-      console.log(`[WebRTC] ICE state: ${iceState}`);
+      console.log('[WebRTC] ICE connection state: ' + iceState);
       if (iceState === 'connected' || iceState === 'completed') {
         if (this.onConnectionStateChange) this.onConnectionStateChange('connected');
-      } else if (iceState === 'failed' || iceState === 'disconnected') {
-        if (this.onConnectionStateChange) this.onConnectionStateChange(iceState);
+      } else if (iceState === 'failed') {
+        if (this.onConnectionStateChange) this.onConnectionStateChange('failed');
+        if (this.isInitiator && !this.isCleanedUp) {
+          console.log('[WebRTC] ICE failed. Attempting ICE restart...');
+          this.restartIce();
+        }
+      } else if (iceState === 'disconnected') {
+        if (this.onConnectionStateChange) this.onConnectionStateChange('disconnected');
       }
     };
 
     // Handle outgoing ICE candidates
     this.peerConnection.onicecandidate = (event) => {
       if (event.candidate && event.candidate.candidate) {
+        console.log('[WebRTC] ICE candidate sent', event.candidate.candidate.slice(0, 45));
         this.broadcastSignal({
           type: 'ice-candidate',
           candidate: event.candidate.toJSON(),
@@ -266,9 +278,20 @@ export class WebRTCManager {
       }
     };
 
+    // Renegotiation handler
+    this.peerConnection.onnegotiationneeded = async () => {
+      try {
+        if (this.isInitiator && !this.makingOffer && !this.isCleanedUp) {
+          await this.sendOffer();
+        }
+      } catch (err) {
+        console.warn('[WebRTC] Renegotiation error:', err);
+      }
+    };
+
     // Handle incoming remote media tracks
     this.peerConnection.ontrack = (event) => {
-      console.log('[WebRTC] Received remote track:', event.track.kind);
+      console.log('[WebRTC] remote track received', event.track.kind, event.track.id);
 
       if (!this.remoteStream) {
         this.remoteStream = new MediaStream();
@@ -281,6 +304,20 @@ export class WebRTCManager {
           this.remoteStream.addTrack(event.track);
           hasNewTrack = true;
         }
+
+        event.track.onunmute = () => {
+          console.log('[WebRTC] remote track unmuted', event.track.kind);
+          if (this.onRemoteStream && this.remoteStream) {
+            this.onRemoteStream(new MediaStream(this.remoteStream.getTracks()));
+          }
+        };
+
+        event.track.onended = () => {
+          console.log('[WebRTC] remote track ended', event.track.kind);
+          if (this.onRemoteStream && this.remoteStream) {
+            this.onRemoteStream(new MediaStream(this.remoteStream.getTracks()));
+          }
+        };
       }
 
       if (event.streams && event.streams[0]) {
@@ -293,7 +330,9 @@ export class WebRTCManager {
       }
 
       if (hasNewTrack && this.onRemoteStream) {
-        this.onRemoteStream(this.remoteStream);
+        console.log('[WebRTC] remote stream attached', this.remoteStream.getTracks().map((t) => t.kind));
+        // Critical: pass a cloned MediaStream reference to trigger React re-render!
+        this.onRemoteStream(new MediaStream(this.remoteStream.getTracks()));
       }
     };
 
@@ -320,6 +359,7 @@ export class WebRTCManager {
       if (this.peerConnection.signalingState !== 'stable') return;
 
       await this.peerConnection.setLocalDescription(offer);
+      console.log('[WebRTC] offer created');
 
       this.broadcastSignal({
         type: 'offer',
@@ -339,7 +379,6 @@ export class WebRTCManager {
     if (this.isCleanedUp) return;
     if (!this.peerConnection) await this.createPeerConnection();
 
-    // Check for glare collision (Perfect Negotiation pattern)
     const offerCollision =
       this.makingOffer || this.peerConnection.signalingState !== 'stable';
 
@@ -358,15 +397,14 @@ export class WebRTCManager {
       } else {
         await this.peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
       }
+      console.log('[WebRTC] remote description set');
 
-      // Process any queued ICE candidates that arrived before remote description
       await this.drainPendingCandidates();
-
-      // Ensure local tracks are attached before creating answer
       this.attachLocalTracksToPeerConnection();
 
       const answer = await this.peerConnection.createAnswer();
       await this.peerConnection.setLocalDescription(answer);
+      console.log('[WebRTC] answer created');
 
       this.broadcastSignal({
         type: 'answer',
@@ -386,6 +424,7 @@ export class WebRTCManager {
     try {
       this.isSettingRemoteAnswerPending = true;
       await this.peerConnection.setRemoteDescription(new RTCSessionDescription(sdp));
+      console.log('[WebRTC] remote description set');
       await this.drainPendingCandidates();
     } catch (err) {
       console.error('[WebRTC] Error handling answer:', err);
@@ -399,6 +438,7 @@ export class WebRTCManager {
    */
   async handleCandidate(candidate) {
     if (this.isCleanedUp || !candidate || !candidate.candidate) return;
+    console.log('[WebRTC] ICE candidate received', candidate.candidate.slice(0, 45));
 
     try {
       const iceCandidate = new RTCIceCandidate(candidate);
@@ -406,6 +446,7 @@ export class WebRTCManager {
       if (this.peerConnection && this.peerConnection.remoteDescription && this.peerConnection.remoteDescription.type) {
         await this.peerConnection.addIceCandidate(iceCandidate);
       } else {
+        console.log('[WebRTC] Queued ICE candidate (waiting for remote description)');
         this.pendingCandidates.push(iceCandidate);
       }
     } catch (err) {
@@ -421,6 +462,10 @@ export class WebRTCManager {
   async drainPendingCandidates() {
     if (!this.peerConnection || !this.peerConnection.remoteDescription) return;
 
+    if (this.pendingCandidates.length > 0) {
+      console.log('[WebRTC] Draining ' + this.pendingCandidates.length + ' queued ICE candidate(s)');
+    }
+
     while (this.pendingCandidates.length > 0) {
       const candidate = this.pendingCandidates.shift();
       try {
@@ -428,6 +473,27 @@ export class WebRTCManager {
       } catch (err) {
         console.warn('[WebRTC] Failed to add drained candidate:', err);
       }
+    }
+  }
+
+  /**
+   * Perform ICE restart if connection failed.
+   */
+  async restartIce() {
+    if (!this.peerConnection || this.isCleanedUp) return;
+    try {
+      this.makingOffer = true;
+      const offer = await this.peerConnection.createOffer({ iceRestart: true });
+      await this.peerConnection.setLocalDescription(offer);
+      console.log('[WebRTC] ICE restart offer created');
+      this.broadcastSignal({
+        type: 'offer',
+        sdp: this.peerConnection.localDescription,
+      });
+    } catch (err) {
+      console.warn('[WebRTC] Failed to restart ICE:', err);
+    } finally {
+      this.makingOffer = false;
     }
   }
 
@@ -526,6 +592,7 @@ export class WebRTCManager {
         event: 'signal',
         payload: {
           senderId: this.userId,
+          senderRole: this.userRole,
           ...data,
         },
       });

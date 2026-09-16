@@ -246,7 +246,7 @@ function AuthorizedInterviewRoom({ interviewId, initialInterview, initialUserRol
     interviewId,
     userId: user?.id,
     userRole: userRole || initialUserRole || 'candidate',
-    enabled: !loading && !error && Boolean(interview) && interview?.status === 'active' && (userRole === 'candidate' || userRole === 'interviewer'),
+    enabled: !loading && !error && Boolean(interview) && (interview?.status === 'active' || interview?.status === 'waiting') && (userRole === 'candidate' || userRole === 'interviewer'),
   });
 
   // Collaborative Code Editor Hook

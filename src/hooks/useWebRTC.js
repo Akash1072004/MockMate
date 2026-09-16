@@ -24,17 +24,27 @@ export function useWebRTC({ interviewId, userId, userRole = 'candidate', enabled
   const isInitializingRef = useRef(false);
   const isTeardownDoneRef = useRef(false);
   const localStreamRef = useRef(null);
+  const userRoleRef = useRef(userRole);
+
+  // Keep userRoleRef up-to-date without recreating connection
+  useEffect(() => {
+    userRoleRef.current = userRole;
+    if (managerRef.current) {
+      managerRef.current.userRole = userRole;
+      managerRef.current.isInitiator = userRole === 'interviewer';
+      managerRef.current.isPolite = userRole === 'candidate';
+    }
+  }, [userRole]);
 
   /**
    * Centralized cleanup function: stops all hardware media tracks,
-   * closes RTCPeerConnection, removes Supabase signaling channel,
-   * and prevents reconnect attempts.
+   * closes RTCPeerConnection, removes Supabase signaling channel.
    */
   const stopMediaAndConnection = useCallback(() => {
     isTeardownDoneRef.current = true;
     isInitializingRef.current = false;
 
-    // Collect all local streams to ensure complete teardown
+    // Collect all local streams to ensure complete hardware release
     const streamsToStop = [
       localStreamRef.current,
       managerRef.current?.localStream,
@@ -46,9 +56,7 @@ export function useWebRTC({ interviewId, userId, userRole = 'candidate', enabled
         if (typeof stream.getTracks === 'function') {
           stream.getTracks().forEach((track) => {
             try {
-              // 3. Disable track before stopping
               track.enabled = false;
-              // 1 & 2. Stop track hardware
               track.stop();
             } catch (_) {}
           });
@@ -56,7 +64,6 @@ export function useWebRTC({ interviewId, userId, userRole = 'candidate', enabled
       } catch (_) {}
     });
 
-    // 4 & 5. Remove/close RTCPeerConnection and close Supabase signaling channel
     if (managerRef.current) {
       try {
         managerRef.current.cleanup();
@@ -64,14 +71,10 @@ export function useWebRTC({ interviewId, userId, userRole = 'candidate', enabled
       managerRef.current = null;
     }
 
-    // 6. Clear localStream
     localStreamRef.current = null;
     setLocalStream(null);
-
-    // 7. Clear remoteStream
     setRemoteStream(null);
 
-    // 8. Clear video elements srcObject across the document
     if (typeof document !== 'undefined') {
       try {
         const videoEls = document.querySelectorAll('video');
@@ -93,21 +96,15 @@ export function useWebRTC({ interviewId, userId, userRole = 'candidate', enabled
       } catch (_) {}
     }
 
-    // 9. Reset camera state
     setIsCameraOn(false);
-
-    // 10. Reset microphone state
     setIsMicOn(false);
     setIsScreenSharing(false);
-
-    // 11. Reset connection state
     setConnectionState('disconnected');
     setSignalingState('idle');
   }, []);
 
   const initWebRTC = useCallback(async () => {
     if (!interviewId || !userId || !enabled) return;
-    // 12. Prevent reconnect/initialization after completion
     if (isTeardownDoneRef.current) return;
     if (isInitializingRef.current) return;
     isInitializingRef.current = true;
@@ -120,15 +117,17 @@ export function useWebRTC({ interviewId, userId, userRole = 'candidate', enabled
 
     setConnectionState('connecting');
 
-    // Create WebRTC manager instance with role
+    const currentRole = userRoleRef.current || userRole;
     const manager = new WebRTCManager({
       interviewId,
       userId,
-      userRole,
+      userRole: currentRole,
       onRemoteStream: (stream) => {
-        console.log('[useWebRTC] Received remote stream update:', stream ? stream.getTracks().length : 0);
+        console.log('[useWebRTC] Received remote stream update:', stream ? stream.getTracks().map(t => t.kind) : null);
         setRemoteStream(stream);
-        setConnectionState('connected');
+        if (stream && stream.getTracks().length > 0) {
+          setConnectionState('connected');
+        }
       },
       onConnectionStateChange: (state) => {
         setConnectionState(state);
@@ -143,7 +142,6 @@ export function useWebRTC({ interviewId, userId, userRole = 'candidate', enabled
 
     managerRef.current = manager;
 
-    // Request camera and microphone access
     try {
       const stream = await manager.initLocalMedia({ video: true, audio: true });
       if (stream && !isTeardownDoneRef.current) {
@@ -154,7 +152,6 @@ export function useWebRTC({ interviewId, userId, userRole = 'candidate', enabled
         setPermissionStatus('granted');
         setPermissionError('');
       } else if (stream && isTeardownDoneRef.current) {
-        // Guard if completion happened while getUserMedia was resolving
         stream.getTracks().forEach((t) => {
           t.enabled = false;
           t.stop();
@@ -167,11 +164,10 @@ export function useWebRTC({ interviewId, userId, userRole = 'candidate', enabled
     }
 
     if (!isTeardownDoneRef.current) {
-      // Connect to isolated Supabase signaling channel
       manager.initSignaling();
     }
     isInitializingRef.current = false;
-  }, [interviewId, userId, userRole, enabled]);
+  }, [interviewId, userId, enabled]);
 
   useEffect(() => {
     if (enabled) {
