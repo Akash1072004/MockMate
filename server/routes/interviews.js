@@ -114,7 +114,7 @@ router.get('/leaderboard', async (req, res) => {
     // 2. Fetch candidate profiles (no arbitrary row limit)
     const { data: profiles, error: profErr } = await supabase
       .from('profiles')
-      .select('id, full_name, username, headline, skills, github, linkedin, role')
+      .select('id, full_name, username, headline, skills, github, linkedin, avatar_url, role')
       .eq('role', 'candidate')
       .range(0, 99999);
 
@@ -171,6 +171,7 @@ router.get('/leaderboard', async (req, res) => {
         skills: profile.skills || [],
         github: profile.github || null,
         linkedin: profile.linkedin || null,
+        avatar_url: profile.avatar_url || null,
         interview_count: scores.length, // Real count of ALL valid completed interviews
         average_score: formattedScore,
         raw_average: rawAvg,

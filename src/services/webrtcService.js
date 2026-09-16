@@ -105,19 +105,19 @@ export const RTC_CONFIG = {
 export function mapMediaError(err) {
   if (!err) return 'Unknown media error occurred.';
   if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
-    return 'Camera and microphone access was denied. Please enable camera and microphone permissions in your browser address bar and try again.';
+    return 'Camera/microphone permission was denied. Please click the lock or media icon in your browser address bar, grant Camera & Microphone permissions, and click Enable Camera & Microphone.';
   }
   if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
-    return 'No camera or microphone was detected. Please check that your input devices are connected.';
+    return 'No compatible camera or microphone hardware was detected. Please verify your webcam and microphone are securely connected and enabled.';
   }
   if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
-    return 'Your camera or microphone is currently being used by another application. Please close any other video tools and try again.';
+    return 'Your camera or microphone is currently in use by another application (e.g. Zoom, Teams, Skype, or another browser window) or blocked by OS privacy settings. Please close other video software and try again.';
   }
   if (err.name === 'OverconstrainedError') {
-    return 'Camera resolution requested is not supported by your hardware.';
+    return 'Requested camera resolution or constraints are not supported by your device hardware driver.';
   }
   if (err.name === 'SecurityError') {
-    return 'Media devices require a secure context (HTTPS or localhost).';
+    return 'Camera and microphone access strictly requires a secure origin (HTTPS or localhost).';
   }
   return err.message || 'Could not access camera or microphone.';
 }
@@ -164,51 +164,121 @@ export class WebRTCManager {
   }
 
   /**
-   * Request local camera & microphone media stream with quality constraints.
+   * Request local camera & microphone media stream with adaptive hardware detection and multi-level fallbacks.
+   * Ensures that if camera fails, audio still works; and if audio fails, camera still works!
    */
   async initLocalMedia({ video = true, audio = true } = {}) {
     if (this.isCleanedUp) return null;
 
-    console.log('[WebRTC] getUserMedia', { video, audio });
+    if (!navigator?.mediaDevices?.getUserMedia) {
+      const isHttps = typeof window !== 'undefined' && (window.isSecureContext || window.location.protocol === 'https:' || window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+      const secErr = new Error(isHttps ? 'Media devices API is not supported on this browser.' : 'Media devices require a secure origin (HTTPS or localhost).');
+      secErr.name = 'SecurityError';
+      throw secErr;
+    }
+
+    // Inspect actual attached hardware devices
+    let hasAudioDevice = true;
+    let hasVideoDevice = true;
     try {
-      this.localStream = await navigator.mediaDevices.getUserMedia({
-        video: video ? { width: { ideal: 640, max: 1280 }, height: { ideal: 480, max: 720 }, frameRate: { ideal: 24, max: 30 } } : false,
-        audio: audio ? { echoCancellation: true, noiseSuppression: true, autoGainControl: true } : false,
-      });
+      if (typeof navigator.mediaDevices.enumerateDevices === 'function') {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const audioInputs = devices.filter((d) => d.kind === 'audioinput');
+        const videoInputs = devices.filter((d) => d.kind === 'videoinput');
+        hasAudioDevice = audioInputs.length > 0;
+        hasVideoDevice = videoInputs.length > 0;
+        console.log('[WebRTC] Hardware devices enumerated:', {
+          audioInputCount: audioInputs.length,
+          videoInputCount: videoInputs.length,
+          totalDevices: devices.length,
+        });
+      }
+    } catch (enumErr) {
+      console.warn('[WebRTC] Hardware enumeration notice (non-fatal):', enumErr.message);
+    }
 
-      this.logStreamDetails(this.localStream);
+    const wantVideo = Boolean(video && hasVideoDevice);
+    const wantAudio = Boolean(audio && hasAudioDevice);
 
+    console.log('[WebRTC] Initiating getUserMedia with targets:', { wantVideo, wantAudio, rawRequested: { video, audio } });
+
+    const finalizeStream = (stream) => {
+      this.localStream = stream;
+      this.logStreamDetails(stream);
       if (this.peerConnection && this.localStream) {
         this.attachLocalTracksToPeerConnection();
       }
+      return stream;
+    };
 
-      return this.localStream;
-    } catch (err) {
-      console.warn('[WebRTC] getUserMedia standard constraints failed, attempting fallback:', err.name);
+    // Strategy 1: Standard high-quality constraints
+    if (wantVideo || wantAudio) {
       try {
-        // Fallback 1: basic video + audio
-        this.localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        this.logStreamDetails(this.localStream);
-        if (this.peerConnection && this.localStream) {
-          this.attachLocalTracksToPeerConnection();
-        }
-        return this.localStream;
-      } catch (fb1Err) {
-        console.warn('[WebRTC] Fallback 1 failed, attempting audio-only fallback:', fb1Err.name);
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: wantVideo
+            ? { width: { ideal: 640, max: 1280 }, height: { ideal: 480, max: 720 }, frameRate: { ideal: 24, max: 30 } }
+            : false,
+          audio: wantAudio
+            ? { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+            : false,
+        });
+        console.log('[WebRTC] Media Strategy 1 (ideal constraints) succeeded');
+        return finalizeStream(stream);
+      } catch (s1Err) {
+        console.warn('[WebRTC] Media Strategy 1 failed (' + s1Err.name + '):', s1Err.message);
+
+        // Strategy 2: Basic unconstrained boolean flags
         try {
-          // Fallback 2: Audio-only if camera is blocked/in-use/missing
-          this.localStream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
-          this.logStreamDetails(this.localStream);
-          if (this.peerConnection && this.localStream) {
-            this.attachLocalTracksToPeerConnection();
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: wantVideo,
+            audio: wantAudio,
+          });
+          console.log('[WebRTC] Media Strategy 2 (basic constraints) succeeded');
+          return finalizeStream(stream);
+        } catch (s2Err) {
+          console.warn('[WebRTC] Media Strategy 2 failed (' + s2Err.name + '):', s2Err.message);
+
+          // Strategy 3: Independent track acquisition (acquire audio and video separately)
+          let acquiredAudioStream = null;
+          let acquiredVideoStream = null;
+
+          if (wantAudio) {
+            try {
+              acquiredAudioStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+              console.log('[WebRTC] Media Strategy 3: Independent audio acquisition succeeded');
+            } catch (aErr) {
+              console.warn('[WebRTC] Independent audio failed (' + aErr.name + '):', aErr.message);
+            }
           }
-          return this.localStream;
-        } catch (fb2Err) {
-          console.error('[WebRTC] getUserMedia completely failed:', fb2Err);
-          throw fb2Err;
+
+          if (wantVideo) {
+            try {
+              acquiredVideoStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+              console.log('[WebRTC] Media Strategy 3: Independent video acquisition succeeded');
+            } catch (vErr) {
+              console.warn('[WebRTC] Independent video failed (' + vErr.name + '):', vErr.message);
+            }
+          }
+
+          const combinedTracks = [];
+          if (acquiredAudioStream) combinedTracks.push(...acquiredAudioStream.getAudioTracks());
+          if (acquiredVideoStream) combinedTracks.push(...acquiredVideoStream.getVideoTracks());
+
+          if (combinedTracks.length > 0) {
+            const combinedStream = new MediaStream(combinedTracks);
+            console.log('[WebRTC] Media Strategy 3: Combined stream created with ' + combinedTracks.length + ' tracks');
+            return finalizeStream(combinedStream);
+          }
+
+          // If all strategies failed, throw the most informative error
+          const chosenErr = s1Err.name !== 'OverconstrainedError' ? s1Err : s2Err;
+          console.error('[WebRTC] All getUserMedia acquisition strategies exhausted:', chosenErr);
+          throw chosenErr;
         }
       }
     }
+
+    return null;
   }
 
   logStreamDetails(stream) {

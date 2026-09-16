@@ -45,15 +45,26 @@ export default function LeaderboardPage() {
 
     if (!supabase) return;
 
-    // Real-time listener: automatically refresh whenever any interview completes or is evaluated
+    // Real-time listener: automatically refresh whenever any interview completes or candidate profile updates
     const channel = supabase
-      .channel('leaderboard_interviews_realtime')
+      .channel('leaderboard_realtime_sync')
       .on(
         'postgres_changes',
         {
           event: '*',
           schema: 'public',
           table: 'interviews',
+        },
+        () => {
+          loadData(true);
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'profiles',
         },
         () => {
           loadData(true);
@@ -195,6 +206,40 @@ export default function LeaderboardPage() {
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
             {getRankBadge(userRankEntry.rank)}
+            {userRankEntry.avatar_url || profile?.avatar_url ? (
+              <img
+                src={userRankEntry.avatar_url || profile?.avatar_url}
+                alt={userRankEntry.candidate_name}
+                style={{
+                  width: '44px',
+                  height: '44px',
+                  borderRadius: '50%',
+                  objectFit: 'cover',
+                  border: '2px solid rgba(99, 102, 241, 0.5)',
+                  boxShadow: '0 0 12px rgba(99, 102, 241, 0.3)',
+                  flexShrink: 0,
+                }}
+              />
+            ) : (
+              <div
+                style={{
+                  width: '44px',
+                  height: '44px',
+                  borderRadius: '50%',
+                  background: 'linear-gradient(135deg, var(--accent-primary) 0%, #4338ca 100%)',
+                  color: '#ffffff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '1.2rem',
+                  fontWeight: 700,
+                  border: '2px solid rgba(99, 102, 241, 0.3)',
+                  flexShrink: 0,
+                }}
+              >
+                {(userRankEntry.candidate_name || 'C').charAt(0).toUpperCase()}
+              </div>
+            )}
             <div>
               <div style={{ fontSize: '0.75rem', color: '#a5b4fc', textTransform: 'uppercase', letterSpacing: '0.05em', fontWeight: 700 }}>
                 Your Current Standing
@@ -405,45 +450,84 @@ export default function LeaderboardPage() {
 
                       {/* Candidate Name & Skills */}
                       <td style={{ padding: '1.1rem 1.25rem' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
-                          <Link
-                            to={`/candidates/${c.username || c.candidate_id}`}
-                            style={{ fontWeight: 700, color: isCurrentUser ? '#a5b4fc' : '#f9fafb', fontSize: '0.95rem', textDecoration: 'none' }}
-                            onMouseEnter={(e) => (e.currentTarget.style.textDecoration = 'underline')}
-                            onMouseLeave={(e) => (e.currentTarget.style.textDecoration = 'none')}
-                          >
-                            {c.candidate_name}
-                          </Link>
-                          {isCurrentUser && (
-                            <span className="badge badge-primary" style={{ fontSize: '0.7rem', padding: '1px 6px' }}>
-                              You
-                            </span>
-                          )}
-                        </div>
-
-                        {/* Skills and GitHub */}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                          {c.skills && c.skills.length > 0 && (
-                            <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
-                              {c.skills.slice(0, 3).map((s, idx) => (
-                                <span key={idx} className="badge badge-secondary" style={{ fontSize: '0.68rem', padding: '1px 5px' }}>
-                                  {s}
-                                </span>
-                              ))}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+                          {c.avatar_url ? (
+                            <img
+                              src={c.avatar_url}
+                              alt={c.candidate_name}
+                              style={{
+                                width: '38px',
+                                height: '38px',
+                                borderRadius: '50%',
+                                objectFit: 'cover',
+                                border: '1px solid rgba(255, 255, 255, 0.15)',
+                                flexShrink: 0,
+                              }}
+                            />
+                          ) : (
+                            <div
+                              style={{
+                                width: '38px',
+                                height: '38px',
+                                borderRadius: '50%',
+                                background: isCurrentUser
+                                  ? 'linear-gradient(135deg, var(--accent-primary) 0%, #4338ca 100%)'
+                                  : 'rgba(255, 255, 255, 0.08)',
+                                color: '#ffffff',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                fontSize: '0.95rem',
+                                fontWeight: 700,
+                                flexShrink: 0,
+                                border: '1px solid rgba(255, 255, 255, 0.1)',
+                              }}
+                            >
+                              {(c.candidate_name || 'C').charAt(0).toUpperCase()}
                             </div>
                           )}
+                          <div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.25rem' }}>
+                              <Link
+                                to={`/candidates/${c.username || c.candidate_id}`}
+                                style={{ fontWeight: 700, color: isCurrentUser ? '#a5b4fc' : '#f9fafb', fontSize: '0.95rem', textDecoration: 'none' }}
+                                onMouseEnter={(e) => (e.currentTarget.style.textDecoration = 'underline')}
+                                onMouseLeave={(e) => (e.currentTarget.style.textDecoration = 'none')}
+                              >
+                                {c.candidate_name}
+                              </Link>
+                              {isCurrentUser && (
+                                <span className="badge badge-primary" style={{ fontSize: '0.7rem', padding: '1px 6px' }}>
+                                  You
+                                </span>
+                              )}
+                            </div>
 
-                          {c.github && (
-                            <a
-                              href={c.github.startsWith('http') ? c.github : `https://${c.github}`}
-                              target="_blank"
-                              rel="noreferrer"
-                              style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center', gap: '0.2rem' }}
-                            >
-                              <span>GitHub</span>
-                              <ExternalLink size={10} />
-                            </a>
-                          )}
+                            {/* Skills and GitHub */}
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                              {c.skills && c.skills.length > 0 && (
+                                <div style={{ display: 'flex', gap: '0.3rem', flexWrap: 'wrap' }}>
+                                  {c.skills.slice(0, 3).map((s, idx) => (
+                                    <span key={idx} className="badge badge-secondary" style={{ fontSize: '0.68rem', padding: '1px 5px' }}>
+                                      {s}
+                                    </span>
+                                  ))}
+                                </div>
+                              )}
+
+                              {c.github && (
+                                <a
+                                  href={c.github.startsWith('http') ? c.github : `https://${c.github}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', display: 'inline-flex', alignItems: 'center', gap: '0.2rem' }}
+                                >
+                                  <span>GitHub</span>
+                                  <ExternalLink size={10} />
+                                </a>
+                              )}
+                            </div>
+                          </div>
                         </div>
                       </td>
 

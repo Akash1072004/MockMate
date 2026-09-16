@@ -70,6 +70,33 @@ export default function ProfilePage() {
   const [ratingStats, setRatingStats] = useState(null);
   const [copiedLink, setCopiedLink] = useState(false);
 
+  // Persistent Draft State across tab/page switches
+  const draftKey = user?.id ? `mockmate_profile_draft_${user.id}` : 'mockmate_profile_draft';
+  const hasUserEditedRef = useRef(false);
+
+  const saveDraft = (field, value) => {
+    hasUserEditedRef.current = true;
+    try {
+      const current = {
+        fullName,
+        avatarUrl,
+        username,
+        headline,
+        bio,
+        skills,
+        github,
+        linkedin,
+        portfolio,
+        leetcode,
+        codeforces,
+        codechef,
+        experience,
+        [field]: value,
+      };
+      sessionStorage.setItem(draftKey, JSON.stringify(current));
+    } catch (_) {}
+  };
+
   // Populate state from profile
   const populateFields = (prof, usr) => {
     if (prof) {
@@ -93,7 +120,36 @@ export default function ProfilePage() {
   };
 
   useEffect(() => {
-    populateFields(profile, user);
+    // Restore unsaved draft from sessionStorage if user previously edited
+    try {
+      const raw = sessionStorage.getItem(draftKey);
+      if (raw) {
+        const d = JSON.parse(raw);
+        if (d && typeof d === 'object') {
+          if (d.fullName !== undefined) setFullName(d.fullName);
+          if (d.avatarUrl !== undefined) setAvatarUrl(d.avatarUrl);
+          if (d.username !== undefined) setUsername(d.username);
+          if (d.headline !== undefined) setHeadline(d.headline);
+          if (d.bio !== undefined) setBio(d.bio);
+          if (d.skills !== undefined) setSkills(d.skills);
+          if (d.github !== undefined) setGithub(d.github);
+          if (d.linkedin !== undefined) setLinkedin(d.linkedin);
+          if (d.portfolio !== undefined) setPortfolio(d.portfolio);
+          if (d.leetcode !== undefined) setLeetcode(d.leetcode);
+          if (d.codeforces !== undefined) setCodeforces(d.codeforces);
+          if (d.codechef !== undefined) setCodechef(d.codechef);
+          if (d.experience !== undefined) setExperience(d.experience);
+          setIsEditing(true);
+          hasUserEditedRef.current = true;
+          return;
+        }
+      }
+    } catch (_) {}
+
+    // Only populate from database if user is not actively editing a draft
+    if (!hasUserEditedRef.current) {
+      populateFields(profile, user);
+    }
 
     if (user?.id) {
       if (profile?.role === 'candidate' || !profile?.role) {
@@ -108,7 +164,7 @@ export default function ProfilePage() {
         });
       }
     }
-  }, [profile, user]);
+  }, [profile, user, draftKey]);
 
   // Sync edit mode with URL param
   useEffect(() => {
@@ -158,6 +214,12 @@ export default function ProfilePage() {
   };
 
   const handleCancelEdit = () => {
+    // Clear unsaved draft from sessionStorage
+    try {
+      sessionStorage.removeItem(draftKey);
+    } catch (_) {}
+    hasUserEditedRef.current = false;
+
     // Discard any staged avatar file & preview
     if (avatarPreviewUrl) {
       URL.revokeObjectURL(avatarPreviewUrl);
@@ -284,6 +346,12 @@ export default function ProfilePage() {
         setAvatarPreviewUrl(null);
       }
       setSelectedAvatarFile(null);
+
+      // Clear draft on successful save
+      try {
+        sessionStorage.removeItem(draftKey);
+      } catch (_) {}
+      hasUserEditedRef.current = false;
 
       // 5. Update UI state & return to View mode
       setSuccess('Profile updated successfully!');
@@ -749,7 +817,7 @@ export default function ProfilePage() {
                   type="text"
                   className="form-control"
                   value={fullName}
-                  onChange={(e) => setFullName(e.target.value)}
+                  onChange={(e) => { setFullName(e.target.value); saveDraft('fullName', e.target.value); }}
                   placeholder="e.g. Alex Chen"
                   required
                 />
@@ -762,7 +830,7 @@ export default function ProfilePage() {
                   type="text"
                   className="form-control"
                   value={username}
-                  onChange={(e) => setUsername(e.target.value)}
+                  onChange={(e) => { setUsername(e.target.value); saveDraft('username', e.target.value); }}
                   placeholder="e.g. alexchen"
                 />
                 <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem', display: 'block' }}>
@@ -779,7 +847,7 @@ export default function ProfilePage() {
                 type="text"
                 className="form-control"
                 value={headline}
-                onChange={(e) => setHeadline(e.target.value)}
+                onChange={(e) => { setHeadline(e.target.value); saveDraft('headline', e.target.value); }}
                 placeholder="e.g. Senior Software Engineer | Distributed Systems & Algorithms"
               />
             </div>
@@ -792,7 +860,7 @@ export default function ProfilePage() {
                 className="form-control"
                 rows={4}
                 value={bio}
-                onChange={(e) => setBio(e.target.value)}
+                onChange={(e) => { setBio(e.target.value); saveDraft('bio', e.target.value); }}
                 placeholder="Share your technical background, engineering passions, and career focus..."
                 style={{ resize: 'vertical' }}
               />
@@ -806,7 +874,7 @@ export default function ProfilePage() {
                 className="form-control"
                 rows={2}
                 value={experience}
-                onChange={(e) => setExperience(e.target.value)}
+                onChange={(e) => { setExperience(e.target.value); saveDraft('experience', e.target.value); }}
                 placeholder="e.g. 4+ years of software development experience specializing in full-stack web and cloud systems."
                 style={{ resize: 'vertical' }}
               />
@@ -820,7 +888,7 @@ export default function ProfilePage() {
                 type="text"
                 className="form-control"
                 value={skills}
-                onChange={(e) => setSkills(e.target.value)}
+                onChange={(e) => { setSkills(e.target.value); saveDraft('skills', e.target.value); }}
                 placeholder="e.g. Python, C++, React, TypeScript, Node.js, SQL, Distributed Systems"
               />
             </div>
@@ -840,7 +908,7 @@ export default function ProfilePage() {
                     type="text"
                     className="form-control"
                     value={leetcode}
-                    onChange={(e) => setLeetcode(e.target.value)}
+                    onChange={(e) => { setLeetcode(e.target.value); saveDraft('leetcode', e.target.value); }}
                     placeholder="Username or URL"
                   />
                 </div>
@@ -852,7 +920,7 @@ export default function ProfilePage() {
                     type="text"
                     className="form-control"
                     value={codeforces}
-                    onChange={(e) => setCodeforces(e.target.value)}
+                    onChange={(e) => { setCodeforces(e.target.value); saveDraft('codeforces', e.target.value); }}
                     placeholder="Handle or URL"
                   />
                 </div>
@@ -864,7 +932,7 @@ export default function ProfilePage() {
                     type="text"
                     className="form-control"
                     value={codechef}
-                    onChange={(e) => setCodechef(e.target.value)}
+                    onChange={(e) => { setCodechef(e.target.value); saveDraft('codechef', e.target.value); }}
                     placeholder="Handle or URL"
                   />
                 </div>
@@ -886,7 +954,7 @@ export default function ProfilePage() {
                     type="text"
                     className="form-control"
                     value={github}
-                    onChange={(e) => setGithub(e.target.value)}
+                    onChange={(e) => { setGithub(e.target.value); saveDraft('github', e.target.value); }}
                     placeholder="Username or URL"
                   />
                 </div>
@@ -898,7 +966,7 @@ export default function ProfilePage() {
                     type="text"
                     className="form-control"
                     value={linkedin}
-                    onChange={(e) => setLinkedin(e.target.value)}
+                    onChange={(e) => { setLinkedin(e.target.value); saveDraft('linkedin', e.target.value); }}
                     placeholder="Username or URL"
                   />
                 </div>
@@ -910,7 +978,7 @@ export default function ProfilePage() {
                     type="text"
                     className="form-control"
                     value={portfolio}
-                    onChange={(e) => setPortfolio(e.target.value)}
+                    onChange={(e) => { setPortfolio(e.target.value); saveDraft('portfolio', e.target.value); }}
                     placeholder="Website or URL"
                   />
                 </div>

@@ -520,11 +520,45 @@ export default function FindInterviewerPage() {
                     position: 'relative',
                   }}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                    <div>
-                      <div style={{ fontSize: '1.25rem', fontWeight: 700, marginBottom: '0.2rem' }}>
-                        {interviewer.full_name}
-                      </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.75rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem' }}>
+                      {interviewer.avatar_url ? (
+                        <img
+                          src={interviewer.avatar_url}
+                          alt={interviewer.full_name}
+                          style={{
+                            width: '46px',
+                            height: '46px',
+                            borderRadius: '50%',
+                            objectFit: 'cover',
+                            border: '2px solid rgba(6, 182, 212, 0.4)',
+                            flexShrink: 0,
+                          }}
+                        />
+                      ) : (
+                        <div
+                          style={{
+                            width: '46px',
+                            height: '46px',
+                            borderRadius: '50%',
+                            background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
+                            color: '#ffffff',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: '1.2rem',
+                            fontWeight: 700,
+                            flexShrink: 0,
+                            border: '2px solid rgba(6, 182, 212, 0.3)',
+                          }}
+                        >
+                          {(interviewer.full_name || 'I').charAt(0).toUpperCase()}
+                        </div>
+                      )}
+                      <div>
+                        <div style={{ fontSize: '1.2rem', fontWeight: 700, marginBottom: '0.2rem' }}>
+                          {interviewer.full_name}
+                        </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
                         <span
                           style={{
@@ -552,6 +586,7 @@ export default function FindInterviewerPage() {
                           <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>New Interviewer</span>
                         )}
                       </div>
+                    </div>
                     </div>
                   </div>
 
