@@ -256,24 +256,47 @@ export default function FindInterviewerPage() {
     };
   }, [user?.id]);
 
-  // Strict Realtime Presence & Active Interview check:
-  // "In Session" requires a genuine active interview in the database
+  // Authoritative Session-Aware Status Check:
+  // Checks activeLiveSessions (from get_active_live_sessions RPC), candidate's own interviews,
+  // interviewer discovery active flag, and live presence.
   const getInterviewerStatus = (interviewer) => {
-    const activeSession = activeLiveSessions.find(s => s.interviewerId === interviewer.id);
-    if (activeSession) {
-      return { 
-        label: 'In Session', 
-        color: '#ef4444', 
-        bg: 'rgba(239, 68, 68, 0.15)', 
+    // 1. Active session in activeLiveSessions (matches interviewerId or interviewer_id)
+    const activeSession = activeLiveSessions.find(
+      (s) => s.interviewerId === interviewer.id || s.interviewer_id === interviewer.id
+    );
+
+    // 2. Candidate's own active interview with this interviewer
+    const candidateActiveInterview = candidateInterviews.find(
+      (i) => i.interviewer_id === interviewer.id && i.status === 'active'
+    );
+
+    // 3. Interviewer marked busy from discovery service or live presence
+    const isSessionActive = Boolean(
+      activeSession ||
+      candidateActiveInterview ||
+      interviewer.isBusy ||
+      livePresenceMap[interviewer.id]?.status === 'busy'
+    );
+
+    const live = livePresenceMap[interviewer.id];
+    const isOnline = live?.status === 'available' || live?.status === 'busy' || interviewer.is_available;
+
+    if (isSessionActive) {
+      return {
+        label: isOnline ? 'Online · In Session' : 'In Session',
+        color: '#f59e0b',
+        bg: 'rgba(245, 158, 11, 0.15)',
         state: 'busy',
-        activeSession 
+        activeSession: activeSession || (candidateActiveInterview ? {
+          id: candidateActiveInterview.id,
+          interviewerId: interviewer.id,
+          candidateId: user?.id,
+          candidateName: profile?.full_name || user?.email,
+        } : null),
       };
     }
 
-    // Never derive "In Session" from online presence or old availability
-    const live = livePresenceMap[interviewer.id];
-    const isAvailable = live?.status === 'available' || interviewer.is_available;
-    if (isAvailable) {
+    if (isOnline) {
       return { label: 'Online · Available', color: '#10b981', bg: 'rgba(16, 185, 129, 0.15)', state: 'available' };
     }
 
@@ -595,21 +618,28 @@ export default function FindInterviewerPage() {
                         (i) => i.interviewer_id === interviewer.id && ['scheduled', 'waiting', 'active'].includes(i.status)
                       );
 
-                      // 1. Genuine Active Interview in Progress
-                      if (existingInterview && existingInterview.status === 'active') {
+                      const activeSession = status.activeSession;
+                      const isCurrentCandidateActive = Boolean(
+                        (existingInterview && existingInterview.status === 'active') ||
+                        (activeSession && (activeSession.candidateId === user?.id || activeSession.candidate_id === user?.id))
+                      );
+
+                      // CASE 1: Current Candidate who sent the request and has the active interview session
+                      if (isCurrentCandidateActive) {
+                        const targetInterviewId = existingInterview?.id || activeSession?.id;
                         return (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', width: '100%' }}>
-                            <div style={{ fontSize: '0.75rem', color: '#10b981', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.45rem', width: '100%' }}>
+                            <div style={{ fontSize: '0.78rem', color: '#10b981', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
                               <span style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981', boxShadow: '0 0 8px #10b981' }} />
-                              <span>Interview In Progress</span>
+                              <span>Interview in Session</span>
                             </div>
                             <Link
-                              to={`/interview/${existingInterview.id}`}
+                              to={`/interview/${targetInterviewId}`}
                               className="btn btn-primary btn-sm"
-                              style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem' }}
+                              style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', fontWeight: 700 }}
                             >
                               <Play size={14} />
-                              <span>Enter My Interview</span>
+                              <span>Enter Interview</span>
                             </Link>
                           </div>
                         );
@@ -808,6 +838,33 @@ export default function FindInterviewerPage() {
                         );
                       }
 
+                      // CASE 2: Other Candidates (Interviewer is in session with someone else)
+                      if (status.state === 'busy') {
+                        return (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', width: '100%' }}>
+                            <button
+                              disabled
+                              className="btn btn-outline btn-sm"
+                              style={{
+                                width: '100%',
+                                opacity: 0.8,
+                                cursor: 'not-allowed',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                gap: '0.4rem',
+                                border: '1px solid rgba(245, 158, 11, 0.4)',
+                                color: '#f59e0b',
+                                background: 'rgba(245, 158, 11, 0.06)',
+                              }}
+                            >
+                              <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#f59e0b' }} />
+                              <span>Interviewer in Session</span>
+                            </button>
+                          </div>
+                        );
+                      }
+
                       // 4. Request was Rejected / Declined
                       if (latestReq && latestReq.status === 'declined') {
                         return (
@@ -902,25 +959,7 @@ export default function FindInterviewerPage() {
                         );
                       }
 
-                      if (status.state === 'busy') {
-                        return (
-                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', width: '100%' }}>
-                            {status.activeSession && status.activeSession.candidateName && (
-                              <div style={{ fontSize: '0.75rem', color: '#f87171', fontWeight: 600, textAlign: 'center' }}>
-                                Currently interviewing: {status.activeSession.candidateName}
-                              </div>
-                            )}
-                            <button
-                              disabled
-                              className="btn btn-outline btn-sm"
-                              style={{ width: '100%', opacity: 0.7, cursor: 'not-allowed', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.4rem', border: '1px solid rgba(239, 68, 68, 0.4)', color: '#f87171' }}
-                            >
-                              <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#ef4444' }} />
-                              <span>In Session — Not Available</span>
-                            </button>
-                          </div>
-                        );
-                      }
+
 
                       return (
                         <button

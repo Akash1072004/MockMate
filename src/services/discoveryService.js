@@ -60,14 +60,18 @@ export async function getAvailableInterviewers() {
     });
   }
 
-  // 3. Fetch genuinely active in-progress interview count
-  const { data: activeInterviews } = await supabase
-    .from('interviews')
-    .select('interviewer_id')
-    .in('interviewer_id', interviewerIds)
-    .eq('status', 'active');
-
-  const activeSet = new Set((activeInterviews || []).map((row) => row.interviewer_id));
+  // 3. Fetch genuinely active in-progress interview count via SECURITY DEFINER RPC (bypasses RLS)
+  const activeSet = new Set();
+  try {
+    const { data: rpcData } = await supabase.rpc('get_active_live_sessions');
+    if (rpcData && Array.isArray(rpcData)) {
+      rpcData.forEach((row) => {
+        if (row.interviewer_id) activeSet.add(row.interviewer_id);
+      });
+    }
+  } catch (err) {
+    console.warn('[discoveryService] Error checking active live sessions via RPC:', err);
+  }
 
   // Combine interviewers with their rating metrics and active status
   const combined = interviewers.map((interviewer) => {

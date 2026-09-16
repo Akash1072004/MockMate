@@ -169,53 +169,18 @@ export async function updateInterviewCode(interviewId, code, language) {
  * Excludes private code and evaluation data.
  */
 export async function fetchLiveSessions() {
-  // 1. Try backend server endpoint (privileged service role query)
-  try {
-    const apiBase = getApiBaseUrl();
-    const res = await fetch(`${apiBase}/interviews/live-sessions`);
-    if (res.ok) {
-      const data = await res.json();
-      if (Array.isArray(data.liveSessions)) {
-        return data.liveSessions;
-      }
-    }
-  } catch (err) {
-    console.warn('[interviewService] Backend live-sessions fetch failed, trying Supabase fallback:', err.message);
-  }
-
-  // 2. Direct Supabase RPC or query fallback
+  // 1. Direct Supabase RPC query (SECURITY DEFINER, fast, bypasses table RLS for active sessions)
   if (supabase) {
     try {
-      // First try the secure helper RPC function
       const { data: rpcData, error: rpcError } = await supabase.rpc('get_active_live_sessions');
       if (!rpcError && Array.isArray(rpcData)) {
         return rpcData.map(i => ({
           id: i.id,
           interviewerId: i.interviewer_id,
+          interviewer_id: i.interviewer_id,
           interviewerName: i.interviewer_name || 'Interviewer',
           candidateId: i.candidate_id,
-          candidateName: i.candidate_name || 'Candidate',
-          interviewType: i.interview_type || 'Technical',
-          difficulty: i.difficulty || 'Medium',
-          startTime: i.start_time,
-          duration: i.duration || 60,
-          status: 'IN SESSION'
-        }));
-      }
-
-      // Fallback to table SELECT via the newly created metadata RLS policy
-      const { data, error } = await supabase
-        .from('interviews')
-        .select('id, interviewer_id, interviewer_name, candidate_id, candidate_name, interview_type, difficulty, start_time, duration, status')
-        .eq('status', 'active')
-        .order('start_time', { ascending: false });
-
-      if (!error && data) {
-        return data.map(i => ({
-          id: i.id,
-          interviewerId: i.interviewer_id,
-          interviewerName: i.interviewer_name || 'Interviewer',
-          candidateId: i.candidate_id,
+          candidate_id: i.candidate_id,
           candidateName: i.candidate_name || 'Candidate',
           interviewType: i.interview_type || 'Technical',
           difficulty: i.difficulty || 'Medium',
@@ -225,8 +190,26 @@ export async function fetchLiveSessions() {
         }));
       }
     } catch (dbErr) {
-      console.error('[interviewService] Supabase fallback live sessions error:', dbErr);
+      console.warn('[interviewService] Supabase RPC get_active_live_sessions error, falling back to backend API:', dbErr);
     }
+  }
+
+  // 2. Try backend server endpoint (privileged service role query fallback)
+  try {
+    const apiBase = getApiBaseUrl();
+    const res = await fetch(`${apiBase}/interviews/live-sessions`);
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.liveSessions)) {
+        return data.liveSessions.map(s => ({
+          ...s,
+          interviewer_id: s.interviewerId || s.interviewer_id,
+          candidate_id: s.candidateId || s.candidate_id,
+        }));
+      }
+    }
+  } catch (err) {
+    console.warn('[interviewService] Backend live-sessions fetch failed:', err.message);
   }
 
   return [];
@@ -269,7 +252,7 @@ export function subscribeToLiveSessions(onUpdate) {
   // Periodic polling fallback (every 10s)
   const pollInterval = setInterval(() => {
     fetchLiveSessions().then((sessions) => onUpdate(sessions));
-  }, 10000);
+  }, 3000);
 
   return () => {
     if (channel) supabase.removeChannel(channel);
