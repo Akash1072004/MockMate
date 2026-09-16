@@ -267,6 +267,8 @@ export default function InterviewerDashboard() {
   const [candidateSearch, setCandidateSearch] = useState('');
 
   const displayName = profile?.full_name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'Interviewer';
+  const avatarUrl = profile?.avatar_url || user?.user_metadata?.avatar_url;
+  const initial = displayName.charAt(0).toUpperCase();
 
   // Real-time Presence publishing: marks interviewer online, busy when in active interview, or offline
   usePresencePublisher({
@@ -426,14 +428,50 @@ export default function InterviewerDashboard() {
         }}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1.5rem' }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
-              <h1 style={{ fontSize: '2rem' }}>Welcome, {displayName}!</h1>
-              <span className="badge badge-success">Interviewer</span>
-            </div>
-            <p style={{ maxWidth: '640px', fontSize: '0.95rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
+            {avatarUrl ? (
+              <img
+                src={avatarUrl}
+                alt={displayName}
+                style={{
+                  width: '60px',
+                  height: '60px',
+                  borderRadius: '50%',
+                  objectFit: 'cover',
+                  border: '2px solid rgba(6, 182, 212, 0.5)',
+                  boxShadow: '0 0 16px rgba(6, 182, 212, 0.25)',
+                  flexShrink: 0,
+                }}
+              />
+            ) : (
+              <div
+                style={{
+                  width: '60px',
+                  height: '60px',
+                  borderRadius: '50%',
+                  background: 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
+                  color: '#ffffff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '1.6rem',
+                  fontWeight: 700,
+                  border: '2px solid rgba(6, 182, 212, 0.3)',
+                  flexShrink: 0,
+                }}
+              >
+                {initial}
+              </div>
+            )}
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.35rem' }}>
+                <h1 style={{ fontSize: '2rem', margin: 0 }}>Welcome, {displayName}!</h1>
+                <span className="badge badge-success">Interviewer</span>
+              </div>
+              <p style={{ maxWidth: '640px', fontSize: '0.95rem', margin: 0 }}>
               Conduct technical and DSA mock interviews, evaluate candidate performance, assign coding problems, and manage your live availability.
             </p>
+            </div>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
@@ -491,6 +529,16 @@ export default function InterviewerDashboard() {
             <Link to="/leaderboard" className="btn btn-secondary btn-sm" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
               <Trophy size={15} color="#f59e0b" />
               <span>Leaderboard</span>
+            </Link>
+
+            <Link 
+              to="/profile?edit=true" 
+              className="btn btn-secondary btn-sm" 
+              style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
+              title="Edit Profile"
+            >
+              <User size={15} />
+              <span>Edit Profile</span>
             </Link>
           </div>
         </div>

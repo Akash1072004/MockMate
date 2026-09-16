@@ -86,6 +86,8 @@ export default function CandidateDashboard() {
   }, []);
 
   const displayName = profile?.full_name || user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'Candidate';
+  const avatarUrl = profile?.avatar_url || user?.user_metadata?.avatar_url;
+  const initial = displayName.charAt(0).toUpperCase();
 
   // Categorize interviews strictly for current authenticated candidate
   const myInterviews = interviews.filter((i) => i.candidate_id === user?.id);
@@ -225,14 +227,50 @@ export default function CandidateDashboard() {
         }}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1.5rem' }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
-              <h1 style={{ fontSize: '2rem' }}>Welcome, {displayName}!</h1>
-              <span className="badge badge-primary">Candidate</span>
-            </div>
-            <p style={{ maxWidth: '640px', fontSize: '0.95rem' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem' }}>
+            {avatarUrl ? (
+              <img
+                src={avatarUrl}
+                alt={displayName}
+                style={{
+                  width: '60px',
+                  height: '60px',
+                  borderRadius: '50%',
+                  objectFit: 'cover',
+                  border: '2px solid rgba(99, 102, 241, 0.5)',
+                  boxShadow: '0 0 16px rgba(99, 102, 241, 0.25)',
+                  flexShrink: 0,
+                }}
+              />
+            ) : (
+              <div
+                style={{
+                  width: '60px',
+                  height: '60px',
+                  borderRadius: '50%',
+                  background: 'linear-gradient(135deg, var(--accent-primary) 0%, #4338ca 100%)',
+                  color: '#ffffff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: '1.6rem',
+                  fontWeight: 700,
+                  border: '2px solid rgba(99, 102, 241, 0.3)',
+                  flexShrink: 0,
+                }}
+              >
+                {initial}
+              </div>
+            )}
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.35rem' }}>
+                <h1 style={{ fontSize: '2rem', margin: 0 }}>Welcome, {displayName}!</h1>
+                <span className="badge badge-primary">Candidate</span>
+              </div>
+              <p style={{ maxWidth: '640px', fontSize: '0.95rem', margin: 0 }}>
               Your candidate performance hub. Practice coding and behavioral interviews with Gemini AI or connect with peer interviewers in real time.
             </p>
+            </div>
           </div>
 
           <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>

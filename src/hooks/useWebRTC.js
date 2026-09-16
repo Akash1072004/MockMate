@@ -147,8 +147,8 @@ export function useWebRTC({ interviewId, userId, userRole = 'candidate', enabled
       if (stream && !isTeardownDoneRef.current) {
         localStreamRef.current = stream;
         setLocalStream(stream);
-        setIsCameraOn(true);
-        setIsMicOn(true);
+        setIsCameraOn(stream.getVideoTracks().length > 0);
+        setIsMicOn(stream.getAudioTracks().length > 0);
         setPermissionStatus('granted');
         setPermissionError('');
       } else if (stream && isTeardownDoneRef.current) {
@@ -221,8 +221,8 @@ export function useWebRTC({ interviewId, userId, userRole = 'candidate', enabled
       if (stream) {
         localStreamRef.current = stream;
         setLocalStream(stream);
-        setIsCameraOn(true);
-        setIsMicOn(true);
+        setIsCameraOn(stream.getVideoTracks().length > 0);
+        setIsMicOn(stream.getAudioTracks().length > 0);
         setPermissionStatus('granted');
         setPermissionError('');
       }

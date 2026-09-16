@@ -201,8 +201,28 @@ export default function ProfileDropdown() {
               onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)'; e.currentTarget.style.color = '#fff'; }}
               onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
             >
-              <Edit3 size={14} style={{ color: '#38bdf8' }} />
-              <span>Edit Profile & Resume</span>
+              <User size={14} style={{ color: '#38bdf8' }} />
+              <span>View Profile</span>
+            </Link>
+
+            <Link
+              to="/profile?edit=true"
+              onClick={() => setIsOpen(false)}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '0.65rem',
+                padding: '0.55rem 1rem',
+                color: 'var(--text-secondary)',
+                fontSize: '0.84rem',
+                textDecoration: 'none',
+                transition: 'all 0.15s ease',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)'; e.currentTarget.style.color = '#fff'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
+            >
+              <Edit3 size={14} style={{ color: '#818cf8' }} />
+              <span>Edit Profile</span>
             </Link>
 
             {publicUsername && (
