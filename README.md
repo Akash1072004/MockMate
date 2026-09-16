@@ -1,100 +1,127 @@
 # MockMate — AI & Peer-to-Peer Technical Interview Platform
 
-MockMate is a full-stack, real-time technical interview platform that pairs software candidates with adaptive Gemini AI simulations and live peer interviewers. Built with React 19, Express, WebRTC, and Supabase PostgreSQL with production-grade Row Level Security (RLS), atomic database RPCs, and Realtime synchronization.
+> A full-stack interview platform combining adaptive AI interviews, live peer-to-peer interviews, real-time collaboration, and automated technical evaluation.
+
+<p align="center">
+  <a href="https://mock-mate-ashy.vercel.app/">
+    <strong>Live Demo</strong>
+  </a>
+  &nbsp;&nbsp;•&nbsp;&nbsp;
+  <a href="https://github.com/Akash1072004/MockMate">
+    <strong>Source Code</strong>
+  </a>
+</p>
 
 ---
 
-## 🌟 Key Features
+## Overview
 
-### 1. Dual Interview Modes
-- **AI-Powered Simulations**:
-  - Adaptive technical, DSA, and behavioral mock interviews powered by Google Gemini.
-  - Multi-rubric automated debriefs assessing problem solving, code quality, communication, technical accuracy, and complexity analysis.
-- **Peer-to-Peer Live Mock Interviews**:
-  - Browse live available interviewers in real time with rating history.
-  - Bidirectional WebRTC audio/video calling with camera, mic, and screen share controls.
-  - Synchronized real-time collaborative code editor with syntax highlighting and multi-language support (Python, C++, Java).
+MockMate is a full-stack, real-time technical interview platform designed to simulate both **AI-driven and human-led interview experiences**.
 
-### 2. Live In-Browser Code Execution Engine
-- Isolated server-side execution pipeline for Python 3, C++ (GCC), and Java 21.
-- Automated validation against test cases with pass/fail metrics, execution time (ms), stdout capture, and runtime error reporting.
-- Submissions permanently recorded in Supabase `code_submissions`.
+Candidates can participate in adaptive technical, DSA, and behavioral interviews powered by Google Gemini, or connect with peer interviewers through live WebRTC sessions with collaborative coding.
 
-### 3. Comprehensive Database Security & Data Integrity
-- **Role Isolation**: Immutable role assignment (`candidate` vs `interviewer`) via database triggers.
-- **Atomic Session Handoff**: `accept_interview_request` atomic RPC creates interview sessions, generates unique join codes, and links requests in a single database transaction.
-- **Strict Row Level Security (RLS)**: Fine-grained policies across all 7 PostgreSQL tables; candidates cannot forge peer sessions, edit evaluations, or overwrite participant records.
-- **Verified Leaderboard**: Real-time rankings computed from completed, scored sessions without exposing private interview notes or codes.
+The platform combines:
 
----
+- AI-powered interview simulations
+- Live peer-to-peer interviews
+- Real-time video and audio communication
+- Collaborative coding
+- Server-side code execution
+- Automated interview evaluation
+- Interview scheduling
+- Resume and profile management
+- Performance leaderboards
+- Database-level security and authorization
 
-## 🛠️ Tech Stack
-
-- **Frontend**: React 19, React Router v7, Vite, Lucide React, Modern Glassmorphism Design System
-- **Realtime & Peer Connections**: Supabase Realtime Channels, WebRTC (STUN/ICE)
-- **Backend**: Node.js, Express, Google GenAI SDK (`@google/genai`)
-- **Database**: Supabase PostgreSQL, Row Level Security, PL/pgSQL Triggers & Security Definer RPCs
+The application is built around a React frontend, Node.js/Express backend, Supabase PostgreSQL, Supabase Realtime, WebRTC, and Google Gemini.
 
 ---
 
-## 🚀 Getting Started
+## Live Application
 
-### Prerequisites
-- Node.js (v18 or higher)
-- npm or yarn
-- A [Supabase](https://supabase.com) project
-- A [Google AI Studio](https://aistudio.google.com/) Gemini API Key
+**Production:** https://mock-mate-ashy.vercel.app/
 
-### Installation
+The application is deployed with:
 
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/Akash1072004/MockMate.git
-   cd MockMate
-   ```
-
-2. **Install dependencies**:
-   ```bash
-   npm install
-   ```
-
-3. **Configure environment variables**:
-   Create a `.env` file in the project root (see `.env.example`):
-   ```env
-   # Frontend (Vite)
-   VITE_SUPABASE_URL=https://your-project.supabase.co
-   VITE_SUPABASE_ANON_KEY=your-supabase-publishable-key
-
-   # Backend Server
-   PORT=5000
-   SUPABASE_SECRET_KEY=your-supabase-secret-key
-   GEMINI_API_KEY=your-gemini-api-key
-   ```
-
-4. **Initialize Supabase Database Schema**:
-   Copy the contents of `supabase_schema.sql` into your Supabase Dashboard SQL Editor and run it to set up tables, triggers, secure RPCs, and Realtime publications.
-
-5. **Start the Development Environment**:
-   Run both frontend and backend concurrently:
-   ```bash
-   npm run dev:all
-   ```
-   - Frontend: `http://localhost:5173`
-   - Backend API: `http://localhost:5000`
+| Component | Platform |
+|---|---|
+| Frontend | Vercel |
+| Backend | Render |
+| Database | Supabase PostgreSQL |
+| Authentication | Supabase Auth |
+| Storage | Supabase Storage |
+| AI | Google Gemini |
 
 ---
 
-## 🔒 Security Architecture
+# Core Features
 
-| Security Domain | Implementation |
-| :--- | :--- |
-| **Request Tampering** | Trigger `enforce_interview_request_security` prevents status forgery and participant manipulation. |
-| **Atomic Acceptance** | RPC `accept_interview_request` runs as `SECURITY DEFINER` within a single transaction. |
-| **Join Code Isolation** | RPC `join_interview_by_code` enforces participant authorization and status validation. |
-| **Score Protection** | Trigger `enforce_interview_update_security` forbids candidate self-scoring or unilateral completion. |
-| **Role Guarding** | Trigger `prevent_profile_role_change` blocks user role escalation. |
+## 1. AI-Powered Interview Simulation
+
+MockMate provides adaptive AI interviews for technical, DSA, and behavioral preparation.
+
+### Capabilities
+
+- Technical interview simulation
+- DSA interview simulation
+- HR/behavioral interviews
+- Adaptive follow-up questions
+- Resume-aware interview flow
+- Structured interview stage progression
+- Automated evaluation
+- Multi-rubric scoring
+- Final interview report
+
+### Evaluation Criteria
+
+| Area | Evaluation |
+|---|---|
+| Problem Solving | Approach, reasoning, and solution quality |
+| Technical Accuracy | Correctness of technical concepts |
+| Code Quality | Readability, structure, and implementation |
+| Communication | Clarity and explanation |
+| Complexity | Time and space complexity analysis |
+| Behavioral | Quality and relevance of responses |
+
+The evaluation pipeline uses structured criteria rather than relying on a single unstructured model response.
 
 ---
 
-## 📄 License
-MIT License. Built for seamless, production-grade technical interview preparation.
+# 2. Live Peer-to-Peer Interviews
+
+MockMate allows candidates to conduct live mock interviews with peer interviewers.
+
+### Interview Flow
+
+```text
+Candidate
+    │
+    ▼
+Find Interviewer
+    │
+    ▼
+Send Interview Request
+    │
+    ▼
+Interviewer Accepts
+    │
+    ▼
+Interview Scheduling
+    │
+    ▼
+Scheduled Interview
+    │
+    ▼
+Interview Room
+    │
+    ├───────────────┐
+    ▼               ▼
+ WebRTC        Collaborative
+Video/Audio         Coding
+    │               │
+    └───────┬───────┘
+            ▼
+        Evaluation
+            │
+            ▼
+          Results
