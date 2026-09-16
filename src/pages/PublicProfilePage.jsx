@@ -45,7 +45,7 @@ export default function PublicProfilePage() {
         // Query by username or fallback to ID
         let query = supabase
           .from('profiles')
-          .select('id, full_name, role, headline, bio, experience, skills, github, linkedin, portfolio, leetcode, codeforces, codechef, username, created_at');
+          .select('id, full_name, role, headline, bio, experience, skills, github, linkedin, portfolio, leetcode, codeforces, codechef, username, avatar_url, created_at');
 
         // Check if username is a UUID
         const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(username);
@@ -96,6 +96,38 @@ export default function PublicProfilePage() {
     }
 
     loadPublicProfile();
+
+    let channel = null;
+    if (supabase) {
+      channel = supabase
+        .channel(`public_profile_${username}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'profiles',
+          },
+          (payload) => {
+            if (payload?.new) {
+              setProfile((prev) => {
+                if (!prev) return prev;
+                if (prev.id === payload.new.id || prev.username === payload.new.username) {
+                  return { ...prev, ...payload.new };
+                }
+                return prev;
+              });
+            }
+          }
+        )
+        .subscribe();
+    }
+
+    return () => {
+      if (channel && supabase) {
+        supabase.removeChannel(channel);
+      }
+    };
   }, [username]);
 
   const handleCopyLink = () => {
@@ -154,23 +186,39 @@ export default function PublicProfilePage() {
       {/* Main Profile Header Card */}
       <div className="card" style={{ padding: '2.5rem', marginBottom: '2rem' }}>
         <div style={{ display: 'flex', gap: '2rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
-          <div
-            style={{
-              width: '84px',
-              height: '84px',
-              borderRadius: '50%',
-              background: 'linear-gradient(135deg, #6366f1 0%, #06b6d4 100%)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontSize: '2rem',
-              fontWeight: 700,
-              color: '#ffffff',
-              flexShrink: 0,
-            }}
-          >
-            {profile.full_name ? profile.full_name.charAt(0).toUpperCase() : <User size={40} />}
-          </div>
+          {profile.avatar_url ? (
+            <img
+              src={profile.avatar_url}
+              alt={profile.full_name || 'User'}
+              style={{
+                width: '84px',
+                height: '84px',
+                borderRadius: '50%',
+                objectFit: 'cover',
+                border: '3px solid rgba(99, 102, 241, 0.4)',
+                boxShadow: '0 0 20px rgba(99, 102, 241, 0.25)',
+                flexShrink: 0,
+              }}
+            />
+          ) : (
+            <div
+              style={{
+                width: '84px',
+                height: '84px',
+                borderRadius: '50%',
+                background: 'linear-gradient(135deg, #6366f1 0%, #06b6d4 100%)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '2rem',
+                fontWeight: 700,
+                color: '#ffffff',
+                flexShrink: 0,
+              }}
+            >
+              {profile.full_name ? profile.full_name.charAt(0).toUpperCase() : <User size={40} />}
+            </div>
+          )}
 
           <div style={{ flex: 1, minWidth: '260px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '0.35rem' }}>

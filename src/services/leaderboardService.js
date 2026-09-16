@@ -47,7 +47,7 @@ export async function getLeaderboard() {
       const candidateIds = leaderboardRows.map((v) => v.candidate_id);
       const { data: profiles } = await supabase
         .from('profiles')
-        .select('id, username, headline, skills, linkedin, github, leetcode, codeforces, codechef, experience')
+        .select('id, username, headline, skills, linkedin, github, leetcode, codeforces, codechef, experience, avatar_url')
         .in('id', candidateIds);
 
       const profileMap = new Map();
@@ -66,6 +66,7 @@ export async function getLeaderboard() {
           codeforces: p?.codeforces || null,
           codechef: p?.codechef || null,
           experience: p?.experience || null,
+          avatar_url: p?.avatar_url || null,
         };
       });
 

@@ -27,6 +27,7 @@ export async function getAvailableInterviewers() {
       is_available,
       headline,
       username,
+      avatar_url,
       created_at
     `)
     .eq('role', 'interviewer')
