@@ -1,4 +1,4 @@
-import { supabase } from '../lib/supabase';
+import { supabase } from '../lib/supabase.js';
 
 /**
  * Centralized STUN / TURN Configuration.
@@ -14,22 +14,57 @@ import { supabase } from '../lib/supabase';
  *    - VITE_TURN_CREDENTIAL or VITE_TURN_PASSWORD
  * 4. Fallback Google STUN servers
  */
-export function getIceServers() {
-  const servers = [];
+// Cached ICE servers fetched dynamically from server or environment
+let cachedRemoteIceServers = null;
 
-  // Default Google STUN servers
-  const defaultStuns = [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' },
-  ];
+// Default Google public STUN servers
+export const DEFAULT_STUN_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
+];
+
+// OpenRelay community TURN relay servers (used as fallback when no custom TURN is configured)
+// Enables WebRTC across Symmetric NAT, 4G/5G mobile hotspots, and cities 1000-2000 km apart
+export const OPENRELAY_COMMUNITY_TURN_SERVERS = [
+  {
+    urls: [
+      'turn:openrelay.metered.ca:80',
+      'turn:openrelay.metered.ca:443',
+      'turn:openrelay.metered.ca:443?transport=tcp',
+      'turns:openrelay.metered.ca:443?transport=tcp',
+    ],
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+];
+
+/**
+ * Centralized STUN / TURN Configuration.
+ * 
+ * Supports:
+ * 1. Standard JSON string via VITE_WEBRTC_ICE_SERVERS
+ * 2. Comma-separated URL string via VITE_WEBRTC_ICE_SERVERS
+ * 3. Discrete TURN environment variables:
+ *    - VITE_TURN_URL or VITE_TURN_SERVER_URL
+ *    - VITE_TURN_USERNAME
+ *    - VITE_TURN_CREDENTIAL or VITE_TURN_PASSWORD
+ * 4. Fallback to OpenRelay community TURN servers for cross-city WAN traversal
+ * 5. Google STUN servers for direct NAT hole punching
+ */
+export function getIceServers() {
+  if (cachedRemoteIceServers && cachedRemoteIceServers.length > 0) {
+    return cachedRemoteIceServers;
+  }
+
+  const servers = [];
 
   if (typeof window !== 'undefined') {
     const rawEnvIce = import.meta.env?.VITE_WEBRTC_ICE_SERVERS;
 
-    // 1. Try parsing VITE_WEBRTC_ICE_SERVERS
+    // 1. Try parsing VITE_WEBRTC_ICE_SERVERS JSON or comma list
     if (rawEnvIce && typeof rawEnvIce === 'string') {
       const trimmed = rawEnvIce.trim();
       if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
@@ -40,10 +75,9 @@ export function getIceServers() {
             servers.push(...list);
           }
         } catch (err) {
-          console.warn('[WebRTC] Failed to parse VITE_WEBRTC_ICE_SERVERS JSON, attempting comma fallback:', err.message);
+          console.warn('[WebRTC-Diag:ICE] Failed to parse VITE_WEBRTC_ICE_SERVERS JSON:', err.message);
         }
       } else if (trimmed.length > 0) {
-        // Comma-separated list of URLs
         const urls = trimmed.split(',').map((u) => u.trim()).filter(Boolean);
         if (urls.length > 0) {
           servers.push({ urls });
@@ -65,17 +99,46 @@ export function getIceServers() {
     }
   }
 
-  // If no STUN is included in custom servers, append Google STUN
+  // Check if any custom TURN server was configured
+  const hasCustomTurn = servers.some((s) => {
+    const u = Array.isArray(s.urls) ? s.urls : [s.urls];
+    return u.some((url) => typeof url === 'string' && (url.startsWith('turn:') || url.startsWith('turns:')));
+  });
+
+  // 3. Fallback to OpenRelay community TURN if no custom TURN configured
+  if (!hasCustomTurn) {
+    servers.push(...OPENRELAY_COMMUNITY_TURN_SERVERS);
+  }
+
+  // 4. Ensure STUN is present
   const hasStun = servers.some((s) => {
     const u = Array.isArray(s.urls) ? s.urls : [s.urls];
     return u.some((url) => typeof url === 'string' && url.startsWith('stun:'));
   });
 
   if (!hasStun) {
-    servers.unshift(...defaultStuns);
+    servers.unshift(...DEFAULT_STUN_SERVERS);
   }
 
-  return servers.length > 0 ? servers : defaultStuns;
+  return servers;
+}
+
+/**
+ * Fetch dynamic ICE servers from backend endpoint if available.
+ */
+export async function loadIceServersFromBackend() {
+  try {
+    const res = await fetch('/api/webrtc/ice-servers');
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data?.iceServers) && data.iceServers.length > 0) {
+        cachedRemoteIceServers = data.iceServers;
+        console.log('[WebRTC-Diag:ICE] Dynamically loaded ' + data.iceServers.length + ' ICE servers from backend');
+        return data.iceServers;
+      }
+    }
+  } catch (_) {}
+  return getIceServers();
 }
 
 export function getRtcConfig() {
@@ -87,7 +150,10 @@ export function getRtcConfig() {
 
   return {
     iceServers,
-    iceCandidatePoolSize: 10,
+    iceTransportPolicy: 'all', // Allows both direct P2P and relay traversal
+    bundlePolicy: 'max-bundle', // Multiplex audio and video on single port pair
+    rtcpMuxPolicy: 'require', // Multiplex RTP and RTCP
+    iceCandidatePoolSize: 0, // Avoid premature candidate timeouts across WAN
     hasTurnConfigured: hasTurn,
   };
 }
@@ -342,14 +408,26 @@ export class WebRTCManager {
         try {
           switch (payload.type) {
             case 'ready':
-              console.log('[WebRTC] Peer announced readiness (' + (payload.senderRole || 'peer') + ')');
+              console.log('[WebRTC-Diag:SIGNAL] Peer announced readiness (' + (payload.senderRole || 'peer') + (payload.pulse ? ' [pulse]' : '') + ')');
+              if (payload.pulse) {
+                // Ignore pulse if connection is already established or in active ICE check
+                const curIce = this.peerConnection?.iceConnectionState;
+                const curConn = this.peerConnection?.connectionState;
+                if (curConn === 'connected' || curIce === 'connected' || curIce === 'completed') {
+                  this.stopReadinessPulse();
+                  return;
+                }
+                if (curIce === 'checking' || curConn === 'connecting' || this.makingOffer || this.isSettingRemoteAnswerPending) {
+                  return;
+                }
+              }
+
               if (this.isInitiator && !this.makingOffer) {
-                // If peer connection was closed or stuck, reset it cleanly
                 if (!this.peerConnection || this.peerConnection.connectionState === 'failed' || this.peerConnection.connectionState === 'closed') {
                   await this.createPeerConnection();
                 }
                 if (this.peerConnection.signalingState === 'stable') {
-                  console.log('[WebRTC] Initiating offer as interviewer...');
+                  console.log('[WebRTC-Diag:SIGNAL] Initiating offer as interviewer...');
                   await this.sendOffer();
                 }
               } else if (!this.isInitiator) {
@@ -358,13 +436,18 @@ export class WebRTCManager {
               break;
 
             case 'ack-ready':
-              console.log('[WebRTC] Received ack-ready from peer (' + (payload.role || 'peer') + ')');
+              console.log('[WebRTC-Diag:SIGNAL] Received ack-ready from peer (' + (payload.role || 'peer') + ')');
               if (this.isInitiator && !this.makingOffer) {
+                const curIce = this.peerConnection?.iceConnectionState;
+                const curConn = this.peerConnection?.connectionState;
+                if (curConn === 'connected' || curIce === 'connected' || curIce === 'checking' || curConn === 'connecting') {
+                  return;
+                }
                 if (!this.peerConnection || this.peerConnection.connectionState === 'failed' || this.peerConnection.connectionState === 'closed') {
                   await this.createPeerConnection();
                 }
                 if (this.peerConnection.signalingState === 'stable') {
-                  console.log('[WebRTC] Generating offer following ack-ready...');
+                  console.log('[WebRTC-Diag:SIGNAL] Generating offer following ack-ready...');
                   await this.sendOffer();
                 }
               }
@@ -413,7 +496,7 @@ export class WebRTCManager {
       })
       .subscribe((status) => {
         if (status === 'SUBSCRIBED' && !this.isCleanedUp) {
-          console.log('[WebRTC] signaling state: subscribed (as ' + this.userRole + ')');
+          console.log('[WebRTC-Diag:SIGNAL] Signaling subscribed (channel: ' + channelName + ', role: ' + this.userRole + ')');
           if (this.onSignalingStateChange) this.onSignalingStateChange('subscribed');
           this.broadcastSignal({ type: 'ready', role: this.userRole });
 
@@ -425,19 +508,25 @@ export class WebRTCManager {
 
   startReadinessPulse() {
     this.stopReadinessPulse();
+    // Pulse every 6s to allow high-latency WAN checks (1000-2000 km) to proceed without collision
     this.readinessPulseTimer = setInterval(() => {
       if (this.isCleanedUp) {
         this.stopReadinessPulse();
         return;
       }
       const connState = this.peerConnection?.connectionState;
-      if (connState === 'connected') {
+      const iceState = this.peerConnection?.iceConnectionState;
+      if (connState === 'connected' || iceState === 'connected' || iceState === 'completed') {
         this.stopReadinessPulse();
+        return;
+      }
+      // If ongoing ICE connectivity checks are running, do NOT send offer-provoking pulses
+      if (iceState === 'checking' || connState === 'connecting') {
         return;
       }
       // Broadcast ready pulse to unstick missed signaling handshakes
       this.broadcastSignal({ type: 'ready', role: this.userRole, pulse: true });
-    }, 3000);
+    }, 6000);
   }
 
   stopReadinessPulse() {
@@ -453,6 +542,10 @@ export class WebRTCManager {
   async createPeerConnection() {
     if (this.peerConnection) return this.peerConnection;
 
+    if (!cachedRemoteIceServers) {
+      await loadIceServersFromBackend().catch(() => {});
+    }
+
     const rtcConfig = getRtcConfig();
     console.log('[WebRTC] peer connection created', {
       turnConfigured: rtcConfig.hasTurnConfigured,
@@ -463,7 +556,7 @@ export class WebRTCManager {
     // Monitor connection states
     this.peerConnection.onconnectionstatechange = () => {
       const state = this.peerConnection?.connectionState || 'disconnected';
-      console.log('[WebRTC] connection state', state);
+      console.log('[WebRTC-Diag:CONN] connectionState changed to:', state);
       if (this.onConnectionStateChange) {
         this.onConnectionStateChange(state);
       }
@@ -482,7 +575,7 @@ export class WebRTCManager {
 
     this.peerConnection.oniceconnectionstatechange = () => {
       const iceState = this.peerConnection?.iceConnectionState || 'disconnected';
-      console.log('[WebRTC] ICE connection state', iceState);
+      console.log('[WebRTC-Diag:ICE] iceConnectionState changed to:', iceState);
       if (iceState === 'connected' || iceState === 'completed') {
         if (this.onConnectionStateChange) this.onConnectionStateChange('connected');
         this.stopReadinessPulse();
@@ -508,8 +601,13 @@ export class WebRTCManager {
 
     this.peerConnection.onsignalingstatechange = () => {
       const sigState = this.peerConnection?.signalingState || 'closed';
-      console.log('[WebRTC] signaling state', sigState);
+      console.log('[WebRTC-Diag:SIGNAL] signalingState changed to:', sigState);
       if (this.onSignalingStateChange) this.onSignalingStateChange(sigState);
+    };
+
+    this.peerConnection.onicegatheringstatechange = () => {
+      const gatherState = this.peerConnection?.iceGatheringState || 'new';
+      console.log('[WebRTC-Diag:ICE-GATHER] iceGatheringState changed to:', gatherState);
     };
 
     // Handle outgoing ICE candidates
@@ -548,7 +646,7 @@ export class WebRTCManager {
 
     // Handle incoming remote media tracks
     this.peerConnection.ontrack = (event) => {
-      console.log('[WebRTC] remote track', {
+      console.log('[WebRTC-Diag:TRACK] Remote media track received:', {
         kind: event.track?.kind,
         id: event.track?.id,
         enabled: event.track?.enabled,
@@ -623,7 +721,7 @@ export class WebRTCManager {
       if (selectedPair) {
         const localCand = stats.get(selectedPair.localCandidateId);
         const remoteCand = stats.get(selectedPair.remoteCandidateId);
-        console.log('[WebRTC] Active candidate pair:', {
+        console.log('[WebRTC-Diag:PAIR] Active candidate pair selected:', {
           localType: localCand?.candidateType,
           remoteType: remoteCand?.candidateType,
           isRelayed: localCand?.candidateType === 'relay' || remoteCand?.candidateType === 'relay',
@@ -651,7 +749,7 @@ export class WebRTCManager {
       if (this.peerConnection.signalingState !== 'stable') return;
 
       await this.peerConnection.setLocalDescription(offer);
-      console.log('[WebRTC] offer', {
+      console.log('[WebRTC-Diag:SDP] Local offer created & sent, signalingState: ' + this.peerConnection.signalingState, {
         type: this.peerConnection.localDescription.type,
         sdpLength: this.peerConnection.localDescription.sdp?.length,
       });
@@ -702,7 +800,7 @@ export class WebRTCManager {
 
       const answer = await this.peerConnection.createAnswer();
       await this.peerConnection.setLocalDescription(answer);
-      console.log('[WebRTC] answer', {
+      console.log('[WebRTC-Diag:SDP] Local answer created & sent, signalingState: ' + this.peerConnection.signalingState, {
         type: this.peerConnection.localDescription.type,
         sdpLength: this.peerConnection.localDescription.sdp?.length,
       });
@@ -741,30 +839,43 @@ export class WebRTCManager {
    * Handle incoming ICE candidate with queuing support.
    */
   async handleCandidate(candidate) {
-    if (this.isCleanedUp || !candidate || !candidate.candidate) return;
+    if (this.isCleanedUp) return;
+
+    if (!candidate) {
+      // Null candidate signals end-of-candidates
+      console.log('[WebRTC-Diag:CANDIDATE] Received end-of-candidates from peer');
+      if (this.peerConnection && this.peerConnection.remoteDescription && !this.isSettingRemoteAnswerPending) {
+        try {
+          await this.peerConnection.addIceCandidate(null);
+        } catch (_) {}
+      }
+      return;
+    }
+
+    if (!candidate.candidate) return;
 
     const candStr = candidate.candidate;
     const typeMatch = candStr.match(/typ\s+(host|srflx|prflx|relay)/i);
     const candidateType = typeMatch ? typeMatch[1].toLowerCase() : candidate.type || 'unknown';
 
-    console.log('[WebRTC] ICE candidate', {
-      direction: 'incoming',
+    console.log('[WebRTC-Diag:CANDIDATE] Incoming candidate from peer:', {
       type: candidateType,
       protocol: candidate.protocol,
     });
 
     try {
       const iceCandidate = new RTCIceCandidate(candidate);
+      const hasRemoteDesc = Boolean(this.peerConnection && this.peerConnection.remoteDescription && this.peerConnection.remoteDescription.type);
 
-      if (this.peerConnection && this.peerConnection.remoteDescription && this.peerConnection.remoteDescription.type) {
+      if (hasRemoteDesc && !this.isSettingRemoteAnswerPending) {
         await this.peerConnection.addIceCandidate(iceCandidate);
       } else {
-        console.log('[WebRTC] Queued ICE candidate (waiting for remote description)');
+        console.log('[WebRTC-Diag:CANDIDATE] Queued incoming candidate (waiting for remote description to settle)');
         this.pendingCandidates.push(iceCandidate);
       }
     } catch (err) {
       if (!this.ignoreOffer) {
-        console.warn('[WebRTC] Failed to add candidate:', err);
+        console.warn('[WebRTC-Diag:WARN] Failed to add candidate:', err.message);
       }
     }
   }

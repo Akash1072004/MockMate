@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>MockMate WebRTC Real Cross-Network & TURN Verification</title>
+  <style>
+    body { font-family: monospace; background: #0f172a; color: #f8fafc; padding: 20px; }
+    h1 { color: #38bdf8; font-size: 1.4rem; }
+    .card { background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 15px; margin-bottom: 15px; }
+    pre { background: #020617; padding: 10px; border-radius: 6px; overflow-x: auto; color: #a5f3fc; }
+    video { width: 160px; height: 120px; background: black; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>MockMate Real WebRTC & TURN Diagnostics Suite</h1>
+  <div id="summary" class="card">Running automated cross-network verification...</div>
+  
+  <div class="card">
+    <h3>Media Elements</h3>
+    <video id="videoA" autoplay playsinline muted></video>
+    <video id="videoB" autoplay playsinline></video>
+  </div>
+
+  <div class="card">
+    <h3>Diagnostic Logs</h3>
+    <pre id="logs"></pre>
+  </div>
+
+  <script>
+    window.testResults = {
+      iceServersFetched: false,
+      iceServers: [],
+      gatheredCandidateTypes: [],
+      relayCandidateFound: false,
+      relayOnlyConnectionState: null,
+      relayCandidatePair: null,
+      remoteTracksReceivedA: [],
+      remoteTracksReceivedB: [],
+      openRelayUsable: false,
+      completed: false,
+      error: null
+    };
+
+    const logEl = document.getElementById('logs');
+    function log(msg, data = '') {
+      const line = '[' + new Date().toISOString().substring(11, 19) + '] ' + msg + ' ' + (data ? JSON.stringify(data) : '');
+      console.log(line);
+      logEl.textContent += line + '\n';
+    }
+
+    async function runDiagnostics() {
+      try {
+        log('Step 1: Fetching ICE servers from /api/webrtc/ice-servers...');
+        const res = await fetch('/api/webrtc/ice-servers');
+        if (!res.ok) throw new Error('Failed to fetch /api/webrtc/ice-servers: ' + res.status);
+        const data = await res.json();
+        window.testResults.iceServers = data.iceServers;
+        window.testResults.iceServersFetched = true;
+        log('ICE servers received: ' + data.iceServers.length + ' server entries');
+
+        // Step 2: Test candidate gathering with iceTransportPolicy: 'all'
+        log('Step 2: Testing candidate gathering types (host, srflx, relay)...');
+        const pcGather = new RTCPeerConnection({
+          iceServers: data.iceServers,
+          bundlePolicy: 'max-bundle',
+          rtcpMuxPolicy: 'require'
+        });
+
+        pcGather.addTransceiver('audio', { direction: 'sendrecv' });
+        pcGather.addTransceiver('video', { direction: 'sendrecv' });
+
+        const gatheredTypes = new Set();
+        const candidateDetails = [];
+
+        await new Promise((resolve) => {
+          pcGather.onicecandidate = (e) => {
+            if (e.candidate) {
+              const str = e.candidate.candidate;
+              const match = str.match(/typ\s+(host|srflx|prflx|relay)/i);
+              const type = match ? match[1].toLowerCase() : 'unknown';
+              gatheredTypes.add(type);
+              candidateDetails.push({
+                type,
+                protocol: e.candidate.protocol,
+                address: e.candidate.address || e.candidate.ip,
+                port: e.candidate.port
+              });
+              log('Gathered candidate: [' + type + '] via ' + e.candidate.protocol);
+            } else {
+              log('ICE candidate gathering complete.');
+              resolve();
+            }
+          };
+
+          pcGather.createOffer().then(offer => pcGather.setLocalDescription(offer));
+          setTimeout(resolve, 8000);
+        });
+
+        window.testResults.gatheredCandidateTypes = Array.from(gatheredTypes);
+        window.testResults.relayCandidateFound = gatheredTypes.has('relay');
+        log('Gathered candidate types summary:', Array.from(gatheredTypes));
+        pcGather.close();
+
+        // Step 3: STRICT Relay-Only Traversal Test
+        log('Step 3: Simulating Cross-Network Symmetric NAT (iceTransportPolicy: relay)...');
+        const rtcRelayConfig = {
+          iceServers: data.iceServers,
+          iceTransportPolicy: 'relay',
+          bundlePolicy: 'max-bundle',
+          rtcpMuxPolicy: 'require'
+        };
+
+        const pc1 = new RTCPeerConnection(rtcRelayConfig);
+        const pc2 = new RTCPeerConnection(rtcRelayConfig);
+
+        pc1.ontrack = (e) => {
+          window.testResults.remoteTracksReceivedA.push(e.track.kind);
+          log('Peer A received remote track:', e.track.kind);
+          const v = document.getElementById('videoA');
+          if (!v.srcObject) v.srcObject = new MediaStream();
+          v.srcObject.addTrack(e.track);
+        };
+
+        pc2.ontrack = (e) => {
+          window.testResults.remoteTracksReceivedB.push(e.track.kind);
+          log('Peer B received remote track:', e.track.kind);
+          const v = document.getElementById('videoB');
+          if (!v.srcObject) v.srcObject = new MediaStream();
+          v.srcObject.addTrack(e.track);
+        };
+
+        const canvas = document.createElement('canvas');
+        canvas.width = 320;
+        canvas.height = 240;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#3b82f6';
+        ctx.fillRect(0, 0, 320, 240);
+        const localVideoStream = canvas.captureStream(15);
+        
+        localVideoStream.getVideoTracks().forEach(t => {
+          pc1.addTrack(t, localVideoStream);
+          pc2.addTrack(t, localVideoStream);
+        });
+
+        pc1.onicecandidate = (e) => {
+          if (e.candidate) pc2.addIceCandidate(e.candidate).catch(() => {});
+        };
+        pc2.onicecandidate = (e) => {
+          if (e.candidate) pc1.addIceCandidate(e.candidate).catch(() => {});
+        };
+
+        const offer = await pc1.createOffer();
+        await pc1.setLocalDescription(offer);
+        await pc2.setRemoteDescription(offer);
+
+        const answer = await pc2.createAnswer();
+        await pc2.setLocalDescription(answer);
+        await pc1.setRemoteDescription(answer);
+
+        const connectedPromise = new Promise((resolve) => {
+          const checkStates = () => {
+            log('Relay Connection States: pc1=[' + pc1.connectionState + ', ice:' + pc1.iceConnectionState + '] pc2=[' + pc2.connectionState + ', ice:' + pc2.iceConnectionState + ']');
+            if (
+              (pc1.connectionState === 'connected' || pc1.iceConnectionState === 'connected' || pc1.iceConnectionState === 'completed') &&
+              (pc2.connectionState === 'connected' || pc2.iceConnectionState === 'connected' || pc2.iceConnectionState === 'completed')
+            ) {
+              resolve(true);
+            }
+          };
+
+          pc1.onconnectionstatechange = checkStates;
+          pc1.oniceconnectionstatechange = checkStates;
+          pc2.onconnectionstatechange = checkStates;
+          pc2.oniceconnectionstatechange = checkStates;
+
+          setTimeout(() => resolve(false), 14000);
+        });
+
+        const isRelayConnected = await connectedPromise;
+        window.testResults.relayOnlyConnectionState = pc1.connectionState;
+        window.testResults.openRelayUsable = isRelayConnected;
+
+        if (isRelayConnected) {
+          log('✅ RELAY-ONLY TURN CONNECTION SUCCEEDED!');
+          const stats = await pc1.getStats();
+          stats.forEach((report) => {
+            if (report.type === 'candidate-pair' && (report.selected || report.state === 'succeeded')) {
+              const localCand = stats.get(report.localCandidateId);
+              const remoteCand = stats.get(report.remoteCandidateId);
+              window.testResults.relayCandidatePair = {
+                localType: localCand?.candidateType,
+                remoteType: remoteCand?.candidateType,
+                protocol: localCand?.protocol,
+                state: report.state
+              };
+              log('Selected candidate pair from getStats():', window.testResults.relayCandidatePair);
+            }
+          });
+        } else {
+          log('❌ Relay-only connection did not complete within timeout. pc1 state: ' + pc1.connectionState + ', ice: ' + pc1.iceConnectionState);
+        }
+
+        pc1.close();
+        pc2.close();
+
+        window.testResults.completed = true;
+        const summary = document.getElementById('summary');
+        summary.innerHTML = '<strong>Diagnostic Result:</strong><br>' +
+          '- TURN Relay Candidate Gathered: <b>' + (window.testResults.relayCandidateFound ? 'YES' : 'NO') + '</b><br>' +
+          '- Candidate Types Gathered: <b>' + window.testResults.gatheredCandidateTypes.join(', ') + '</b><br>' +
+          '- Relay-Only Connection State: <b>' + window.testResults.relayOnlyConnectionState + '</b><br>' +
+          '- OpenRelay Usable / Responsive: <b>' + (window.testResults.openRelayUsable ? 'YES (Verified)' : 'UNRELIABLE / BLOCKED') + '</b><br>' +
+          '- Remote Tracks Received: <b>' + (window.testResults.remoteTracksReceivedA.length > 0 ? 'YES' : 'NO') + '</b>';
+      } catch (err) {
+        log('Error in diagnostics: ' + err.message);
+        window.testResults.error = err.message;
+        window.testResults.completed = true;
+      }
+    }
+
+    window.addEventListener('DOMContentLoaded', runDiagnostics);
+  </script>
+</body>
+</html>

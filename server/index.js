@@ -108,12 +108,15 @@ import runRouter from './routes/run.js';
 import evaluateRouter from './routes/evaluate.js';
 import interviewsRouter from './routes/interviews.js';
 import profileRouter from './routes/profile.js';
+import webrtcRouter from './routes/webrtc.js';
 
 app.use('/api/questions', questionsRouter);
 app.use('/api/run', runRouter);
 app.use('/api/evaluate', evaluateRouter);
 app.use('/api/interviews', interviewsRouter);
 app.use('/api/profile', profileRouter);
+app.use('/api/webrtc', webrtcRouter);
+app.use(express.static(path.resolve(__dirname, '../public')));
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
